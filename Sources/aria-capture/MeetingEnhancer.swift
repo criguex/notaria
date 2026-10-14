@@ -43,6 +43,12 @@ final class MeetingEnhancer {
     <nombre>", a quién se dirigen) permitan saber quién habla, usa el nombre real al citar y al
     asignar decisiones y action items; si "Otros" mezcla varias personas, distínguelas cuando el
     contexto lo permita. Si no hay certeza, conserva "Yo"/"Otros" — NUNCA inventes nombres.
+
+    Contexto visual: si recibes un bloque "Contexto visual (OCR local)", es texto extraído por OCR
+    de capturas de pantalla durante la reunión, con hora. Úsalo solo para enriquecer con detalle
+    (cifras, títulos de diapositivas, URLs, nombres en pantalla) lo que ya dicen las notas o el
+    transcript — nunca como fuente única de una decisión o action item, y nunca lo inventes si no
+    viene en el mensaje.
     """
 
     private let client: EnhanceBackend
@@ -85,7 +91,8 @@ final class MeetingEnhancer {
         notes: String,
         date: Date,
         durationSeconds: TimeInterval,
-        calendarMeeting: CalendarMeeting? = nil
+        calendarMeeting: CalendarMeeting? = nil,
+        visualContext: String? = nil
     ) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "es_CO")
@@ -107,6 +114,9 @@ final class MeetingEnhancer {
         if !trimmedNotes.isEmpty {
             message += "\n\n## Notas del usuario (estructura a respetar)\n\(trimmedNotes)"
         }
+        if let visualContext, !visualContext.isEmpty {
+            message += "\n\n## Contexto visual (OCR local, por hora)\n\(visualContext)"
+        }
         message += """
 
 
@@ -122,6 +132,7 @@ final class MeetingEnhancer {
         date: Date,
         durationSeconds: TimeInterval,
         calendarMeeting: CalendarMeeting? = nil,
+        visualContext: String? = nil,
         onText: ((String) -> Void)? = nil
     ) async throws -> EnhancedNote {
         let message = Self.composeUserMessage(
@@ -129,7 +140,8 @@ final class MeetingEnhancer {
             notes: notes,
             date: date,
             durationSeconds: durationSeconds,
-            calendarMeeting: calendarMeeting
+            calendarMeeting: calendarMeeting,
+            visualContext: visualContext
         )
 
         let result = try await client.complete(

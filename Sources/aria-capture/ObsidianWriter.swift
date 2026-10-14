@@ -11,6 +11,7 @@ struct MeetingNote {
     var source: String = "aria"
     var externalID: String? = nil
     var url: String? = nil
+    var pauses: [PauseInterval] = []
 }
 
 final class ObsidianWriter {
@@ -70,6 +71,9 @@ final class ObsidianWriter {
                 externalLines += "\nurl: \(Self.yamlQuoted(url))"
             }
         }
+        let pausasLine = note.pauses.isEmpty
+            ? ""
+            : "\npausas: [" + note.pauses.map { Self.yamlQuoted(PauseLogic.rangeLabel(for: $0)) }.joined(separator: ", ") + "]"
         var output = """
         ---
         titulo: \(Self.yamlQuoted(note.title))
@@ -77,7 +81,7 @@ final class ObsidianWriter {
         creado: \(day)
         fuente: \(note.source)
         participantes: \(participantsYAML)\(companiesLine)\(externalLines)
-        duracion: \(String(format: "%02d:%02d", minutes, seconds))
+        duracion: \(String(format: "%02d:%02d", minutes, seconds))\(pausasLine)
         tags: [reunion, \(note.source)]
         ---
 

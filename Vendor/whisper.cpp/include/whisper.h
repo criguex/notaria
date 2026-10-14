@@ -648,6 +648,62 @@ extern "C" {
 
     WHISPER_API void whisper_log_set(ggml_log_callback log_callback, void * user_data);
 
+    //
+    // Voice Activity Detection (VAD) — Silero, backport puntual (ver docs/ADR-silero-vad.md)
+    //
+
+    typedef struct whisper_vad_params {
+        float threshold;
+        int   min_speech_duration_ms;
+        int   min_silence_duration_ms;
+        float max_speech_duration_s;
+        int   speech_pad_ms;
+        float samples_overlap;
+    } whisper_vad_params;
+
+    struct whisper_vad_context;
+
+    WHISPER_API struct whisper_vad_params whisper_vad_default_params(void);
+
+    struct whisper_vad_context_params {
+        int   n_threads;
+        bool  use_gpu;
+        int   gpu_device;
+    };
+
+    WHISPER_API struct whisper_vad_context_params whisper_vad_default_context_params(void);
+
+    WHISPER_API struct whisper_vad_context * whisper_vad_init_from_file_with_params(const char * path_model,              struct whisper_vad_context_params params);
+    WHISPER_API struct whisper_vad_context * whisper_vad_init_with_params          (struct whisper_model_loader * loader, struct whisper_vad_context_params params);
+
+    WHISPER_API bool whisper_vad_detect_speech(
+            struct whisper_vad_context * vctx,
+                           const float * samples,
+                                   int   n_samples);
+
+    WHISPER_API int     whisper_vad_n_probs(struct whisper_vad_context * vctx);
+    WHISPER_API float * whisper_vad_probs  (struct whisper_vad_context * vctx);
+
+    struct whisper_vad_segments;
+
+    WHISPER_API struct whisper_vad_segments * whisper_vad_segments_from_probs(
+            struct whisper_vad_context * vctx,
+            struct whisper_vad_params    params);
+
+    WHISPER_API struct whisper_vad_segments * whisper_vad_segments_from_samples(
+            struct whisper_vad_context * vctx,
+            struct whisper_vad_params    params,
+                           const float * samples,
+                                   int   n_samples);
+
+    WHISPER_API int whisper_vad_segments_n_segments(struct whisper_vad_segments * segments);
+
+    WHISPER_API float whisper_vad_segments_get_segment_t0(struct whisper_vad_segments * segments, int i_segment);
+    WHISPER_API float whisper_vad_segments_get_segment_t1(struct whisper_vad_segments * segments, int i_segment);
+
+    WHISPER_API void whisper_vad_free_segments(struct whisper_vad_segments * segments);
+    WHISPER_API void whisper_vad_free         (struct whisper_vad_context  * ctx);
+
 #ifdef __cplusplus
 }
 #endif

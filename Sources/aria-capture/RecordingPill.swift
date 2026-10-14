@@ -6,9 +6,11 @@ final class RecordingPillWindowController {
 
     static let shared = RecordingPillWindowController()
 
-    static let pillSize = NSSize(width: 232, height: 180)
+    static let pillSize = NSSize(width: 256, height: 180)
 
     private var panel: NSPanel?
+
+    var frame: NSRect? { panel?.frame }
 
     func show(controller: RecordingController, feed: LiveTranscriptFeed) {
         let panel = panel ?? makePanel()
@@ -17,7 +19,8 @@ final class RecordingPillWindowController {
             controller: controller,
             feed: feed,
             onDrag: { [weak self] delta in self?.applyDrag(delta) },
-            onDragEnded: { [weak self] in self?.persistPosition() }
+            onDragEnded: { [weak self] in self?.persistPosition() },
+            onToggleChat: { LiveChatPanelController.shared.toggle(controller: controller, feed: feed) }
         )
         panel.contentView = NSHostingView(rootView: view)
         restorePosition(panel: panel)
@@ -26,6 +29,7 @@ final class RecordingPillWindowController {
 
     func hide() {
         panel?.orderOut(nil)
+        LiveChatPanelController.shared.hide()
     }
 
     private func makePanel() -> NSPanel {
@@ -73,11 +77,13 @@ struct RecordingPillView: View {
     let feed: LiveTranscriptFeed
     let onDrag: (CGSize) -> Void
     let onDragEnded: () -> Void
+    let onToggleChat: () -> Void
 
     @State private var hovering = false
     @State private var lines: [LiveTranscriptLine] = []
     @State private var pollTimer: Timer?
     @State private var lastTranslation: CGSize = .zero
+    @State private var pauseTick = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -87,23 +93,45 @@ struct RecordingPillView: View {
             }
         }
         .frame(width: RecordingPillWindowController.pillSize.width, alignment: .topLeading)
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            if controller.isPaused { pauseTick += 1 }
+        }
+    }
+
+    private var pausedElapsedLabel: String {
+        guard let start = controller.pauseLog.openPauseStart else { return "" }
+        let total = max(0, Int(Date().timeIntervalSince(start)))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var statusText: String {
-        if controller.isPaused { return "En pausa" }
+        if controller.isPaused {
+            let paused = pausedElapsedLabel
+            return paused.isEmpty ? "En pausa" : "En pausa \(paused)"
+        }
         return controller.recordingElapsed.isEmpty ? "Grabando" : "Grabando \(controller.recordingElapsed)"
     }
 
     private var pillBar: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(controller.isPaused ? BrandColor.pizarra : BrandColor.sello)
-                .frame(width: 10, height: 10)
-            Text(statusText)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(BrandColor.papel)
-                .lineLimit(1)
-                .layoutPriority(1)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(controller.isPaused ? BrandColor.pizarra : BrandColor.sello)
+                    .frame(width: 10, height: 10)
+                Text(statusText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(BrandColor.papel)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onToggleChat() }
+            if controller.visualContextActive {
+                Image(systemName: "eye.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(BrandColor.papel.opacity(0.85))
+                    .help("Contexto visual activo: capturas + OCR local")
+            }
             Spacer(minLength: 4)
             Button {
                 MainWindowBridge.shared.triggerOpenToHoy()

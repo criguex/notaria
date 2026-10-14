@@ -104,10 +104,10 @@ Campos:
 - `transcript` (opcional; texto plano, una línea por turno).
 - `url` (opcional; se agrega como enlace "Ver original" al final del cuerpo).
 
-### JSON de otras fuentes
+### JSON from other sources
 
-El importador también reconoce nombres de campo alternativos comunes en
-exports JSON de otras apps de notas de reuniones. Se soportan alias de
-campos: `meeting_at` ↔ `date`, `summary_markdown` ↔ `body`, `participants` ↔
-`attendees`. Si tu JSON ya incluye un campo `"source"`, no es necesario
-pasar el flag `--source`.
+The importer also recognizes alternative field names commonly found in JSON
+exports from other meeting-note apps. Field aliases are supported:
+`meeting_at` ↔ `date`, `summary_markdown` ↔ `body`, `participants` ↔
+`attendees`. If your JSON already includes a `"source"` field, the `--source`
+flag is not required.

@@ -22,7 +22,9 @@ final class RecordingController: ObservableObject {
     @Published var recordingElapsed = ""
     @Published var isDictation = false
     @Published private(set) var session = RecordingSessionMachine()
+    @Published private(set) var pauseLog = PauseLog()
     @Published var alwaysOn = AriaConfig.load().alwaysOn
+    @Published var visualContextActive = false
     let showUpcoming = AriaConfig.load().showUpcoming
 
     private var autoStarted = false
@@ -36,6 +38,7 @@ final class RecordingController: ObservableObject {
     private var system: SystemAudioCapture?
     private var mic: MicCapture?
     private var recorder: GrowableStereoRecorder?
+    private var visualContext: VisualContextCapture?
     private let sleepGuard = SleepGuard()
     private var callTimer: Timer?
     private var elapsedTimer: Timer?
@@ -169,14 +172,18 @@ final class RecordingController: ObservableObject {
 
     func pauseRecording() {
         guard isRecording, session.pause() else { return }
+        pauseLog.beginPause(at: Date(), activeOffsetSeconds: session.elapsedSeconds)
         recorder?.setPaused(true)
         liveRunner?.pause()
+        visualContext?.setPaused(true)
     }
 
     func resumeRecording() {
         guard isRecording, session.resume() else { return }
+        pauseLog.endPause(at: Date())
         recorder?.setPaused(false)
         liveRunner?.resume()
+        visualContext?.setPaused(false)
     }
 
     private func keepRecordingAfterStillThereWarning() {
@@ -226,9 +233,23 @@ final class RecordingController: ObservableObject {
             self.isDictation = dictationOnly
             sleepGuard.begin()
             session = RecordingSessionMachine()
+            pauseLog = PauseLog()
             let since = Date()
             state = .recording(since: since)
             notepad.begin(since: since)
+            let config = AriaConfig.load()
+            if !dictationOnly, config.visualContextEnabled {
+                let capture = VisualContextCapture(
+                    excludedBundleIDs: config.excludedVisualContextBundleIDs,
+                    changedRatioThreshold: config.visualContextChangeThreshold
+                )
+                capture.start(sessionStart: since)
+                visualContext = capture
+                visualContextActive = true
+            } else {
+                visualContext = nil
+                visualContextActive = false
+            }
             let runner = LiveTranscriptionRunner(recorder: recorder, feed: liveTranscriptFeed)
             runner.start()
             liveRunner = runner
@@ -241,11 +262,25 @@ final class RecordingController: ObservableObject {
         state = .processing(step: "guardando audio")
         autoStarted = false
         session.stop()
+        pauseLog.endPause(at: Date())
+        let pauses = pauseLog.intervals
         StillThereWarningWindowController.shared.dismiss()
         liveRunner?.stop()
         liveRunner = nil
         RecordingPillWindowController.shared.hide()
         let ownNotesDraft = notepad.finish()
+        visualContext?.stop()
+        let pendingVisualCaptures = visualContext?.pendingCaptures ?? []
+        visualContext = nil
+        visualContextActive = false
+        let visualRecords: [VisualCaptureRecord] = pendingVisualCaptures.enumerated().map { index, capture in
+            VisualCaptureRecord(
+                elapsedSeconds: capture.elapsedSeconds,
+                ocrText: capture.ocrText,
+                imageFileName: VisualContextStorage.imageFileName(index: index + 1)
+            )
+        }
+        let visualContextSummary = VisualContextPrompt.summaryBlock(captures: visualRecords)
         Task {
             mic?.stop()
             await system?.stop()
@@ -277,7 +312,7 @@ final class RecordingController: ObservableObject {
                         segments = polished
                     }
                 }
-                let transcript = TranscriptFormatter.render(segments)
+                let transcript = TranscriptFormatter.render(segments, pauses: pauses)
                 let legacyNotes = NotesStore().rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
                 let ownNotes = MeetingNotepadLogic.mergedOwnNotes(legacyNotes, ownNotesDraft)
                 let participants = CalendarMeeting.participants(meeting: calendarMeeting, fallback: transcription.speakers)
@@ -291,9 +326,11 @@ final class RecordingController: ObservableObject {
                         notes: ownNotes,
                         date: since,
                         durationSeconds: transcription.durationSeconds,
-                        calendarMeeting: calendarMeeting
+                        calendarMeeting: calendarMeeting,
+                        visualContext: visualContextSummary
                     )
-                    let body = MeetingNotepadLogic.appendingOwnNotesSection(to: enhanced.markdown, ownNotes: ownNotes)
+                    let bodyWithNotes = MeetingNotepadLogic.appendingOwnNotesSection(to: enhanced.markdown, ownNotes: ownNotes)
+                    let body = PauseLogic.appendingPausesSection(to: bodyWithNotes, pauses: pauses)
                     note = MeetingNote(
                         title: calendarMeeting?.title ?? enhanced.title,
                         date: since,
@@ -301,15 +338,17 @@ final class RecordingController: ObservableObject {
                         durationSeconds: transcription.durationSeconds,
                         body: body,
                         transcript: transcript,
-                        companies: calendarMeeting?.companies ?? []
+                        companies: calendarMeeting?.companies ?? [],
+                        pauses: pauses
                     )
                 } else {
                     let timeFormatter = DateFormatter()
                     timeFormatter.dateFormat = "HH:mm"
-                    let body = MeetingNotepadLogic.appendingOwnNotesSection(
+                    let bodyWithNotes = MeetingNotepadLogic.appendingOwnNotesSection(
                         to: "## Transcript\n\(transcript.isEmpty ? "_(sin voz detectada)_" : transcript)",
                         ownNotes: ownNotes
                     )
+                    let body = PauseLogic.appendingPausesSection(to: bodyWithNotes, pauses: pauses)
                     note = MeetingNote(
                         title: calendarMeeting?.title ?? "Reunion \(timeFormatter.string(from: since)) (sin enhance)",
                         date: since,
@@ -317,7 +356,8 @@ final class RecordingController: ObservableObject {
                         durationSeconds: transcription.durationSeconds,
                         body: body,
                         transcript: nil,
-                        companies: calendarMeeting?.companies ?? []
+                        companies: calendarMeeting?.companies ?? [],
+                        pauses: pauses
                     )
                 }
                 let url = try ObsidianWriter().write(note)
@@ -325,8 +365,24 @@ final class RecordingController: ObservableObject {
                 if !keepAudio {
                     try? FileManager.default.removeItem(at: wavURL)
                 }
-                if let store = try? MeetingStore() {
-                    try? store.saveMeeting(
+                var savedVisualImagePaths: [(elapsedSeconds: Double, ocrText: String, imagePath: String)] = []
+                if !visualRecords.isEmpty {
+                    let (stem, capturesDir) = VisualContextStorage.capturesDirectory(forNoteAt: url)
+                    do {
+                        try VisualContextStorage.writeImages(
+                            zip(visualRecords, pendingVisualCaptures).map { ($0.imageFileName, $1.jpegData) },
+                            toDirectory: capturesDir
+                        )
+                        try VisualContextStorage.appendSection(noteStem: stem, captures: visualRecords, toNoteAt: url)
+                        savedVisualImagePaths = visualRecords.map {
+                            (elapsedSeconds: $0.elapsedSeconds, ocrText: $0.ocrText, imagePath: capturesDir.appendingPathComponent($0.imageFileName).path)
+                        }
+                    } catch {
+                        print("[contexto visual] no se pudieron guardar las capturas: \(error.localizedDescription)")
+                    }
+                }
+                if let store = try? MeetingStore(),
+                   let meetingID = try? store.saveMeeting(
                         date: since,
                         title: note.title,
                         durationSeconds: transcription.durationSeconds,
@@ -334,8 +390,10 @@ final class RecordingController: ObservableObject {
                         wavPath: keepAudio ? wavURL.path : nil,
                         segments: segments,
                         quickNotes: NotesStore().all(),
-                        ownNotes: ownNotes
-                    )
+                        ownNotes: ownNotes,
+                        pauses: pauses
+                   ) {
+                    try? store.insertVisualCaptures(savedVisualImagePaths, meetingID: meetingID)
                 }
                 try? NotesStore().clear()
                 state = .done(noteURL: url)

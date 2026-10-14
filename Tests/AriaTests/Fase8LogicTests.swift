@@ -26,12 +26,9 @@ final class Fase8LogicTests: XCTestCase {
         XCTAssertEqual(viaStatic.map { $0.upperBound }, viaProtocol.map { $0.upperBound })
     }
 
-    func testSileroVADFallsBackToEnergyWhenModelMissing() {
-        let samples = toneFixture()
-        let energy = EnergyVAD().voicedRegions(in: samples, sampleRate: 16_000)
-        let silero = SileroVAD().voicedRegions(in: samples, sampleRate: 16_000)
-        XCTAssertEqual(energy.map { $0.lowerBound }, silero.map { $0.lowerBound })
-        XCTAssertEqual(energy.map { $0.upperBound }, silero.map { $0.upperBound })
+    func testSileroVADInitFailsWhenModelFileMissing() {
+        let missingPath = NSTemporaryDirectory() + "no-existe-\(UUID().uuidString).bin"
+        XCTAssertNil(SileroVAD(modelPath: missingPath))
     }
 
     func testVADFactoryPrefersEnergyWhenModelAbsent() {

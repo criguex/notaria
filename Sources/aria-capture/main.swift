@@ -130,14 +130,29 @@ func isMenubarRunning() -> Bool {
     return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 }
 
-let arguments = CommandLine.arguments.dropFirst()
-let mode = arguments.first ?? "usage"
+// Empaquetado como .app: la raíz de un bundle firmado solo puede tener Contents/,
+// así que los recursos (icono, shader Metal) se copian ahí (ver scripts/package-app.sh)
+// en vez de los *.bundle sueltos que SwiftPM busca junto a Bundle.main.bundleURL.
+// whisper.cpp (ggml-metal.m) soporta esta variable para encontrar ggml-metal.metal.
+if let resourceURL = Bundle.main.resourceURL {
+    setenv("GGML_METAL_PATH_RESOURCES", resourceURL.path, 1)
+}
 
-if mode != "mcp" {
+let arguments = CommandLine.arguments.dropFirst()
+let mode = arguments.first ?? "menubar"
+
+if mode != "mcp", mode != "--version", mode != "-v" {
     print("Aria capture — prototipo Fase 0")
 }
 
 switch mode {
+case "--version", "-v":
+    let info = Bundle.main.infoDictionary
+    let version = (info?["CFBundleShortVersionString"] as? String) ?? "dev"
+    let build = (info?["CFBundleVersion"] as? String) ?? ""
+    print("NotarIA \(version)" + (build.isEmpty || build == version ? "" : " (\(build))"))
+    exit(0)
+
 case "system":
     let smokeSeconds = 5
     print("Smoke test de audio del sistema: \(smokeSeconds) s. Reproduce algo con sonido.")
@@ -839,6 +854,17 @@ case "import":
     }
 
 case "model":
+    let modelArgs = Array(arguments.dropFirst())
+    if modelArgs.first == "vad" {
+        do {
+            let modelURL = try await SileroModel.ensureModel()
+            print("[vad] Modelo Silero listo: \(modelURL.path)")
+            exit(0)
+        } catch {
+            print("[error] \(error.localizedDescription)")
+            exit(1)
+        }
+    }
     do {
         let modelURL = try await WhisperModelStore.ensureModel()
         print("[whisper] Modelo listo: \(modelURL.path)")
@@ -923,6 +949,6 @@ case "wav":
     }
 
 default:
-    print("Uso: aria-capture [wav [segundos] | system | mic | check | model | transcribe [archivo.wav] | note [texto] | claude <texto> | enhance [--offline] [--polish] [--speakers <mapa>] [--template <nombre>] [archivo.wav] | menubar | open | history | calls | calendar | chat [--meeting <id>] [--last <n>] <pregunta> | recipe [<nombre>] [--meeting <id>] [--last <n>] | brief [--with <nombres>] [--title <titulo>] | search <palabras> | template | ai test | mcp | config [clave valor] | import <ruta> [--source nombre] | import-granola <directorio-json>]")
+    print("Uso: aria-capture [--version | wav [segundos] | system | mic | check | model | transcribe [archivo.wav] | note [texto] | claude <texto> | enhance [--offline] [--polish] [--speakers <mapa>] [--template <nombre>] [archivo.wav] | menubar | open | history | calls | calendar | chat [--meeting <id>] [--last <n>] <pregunta> | recipe [<nombre>] [--meeting <id>] [--last <n>] | brief [--with <nombres>] [--title <titulo>] | search <palabras> | template | ai test | mcp | config [clave valor] | import <ruta> [--source nombre] | import-granola <directorio-json>]")
     exit(2)
 }

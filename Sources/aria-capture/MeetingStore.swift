@@ -12,6 +12,14 @@ struct MeetingRecord {
     var externalID: String? = nil
 }
 
+struct VisualCaptureRow {
+    let id: Int64
+    let meetingID: Int64
+    let elapsedSeconds: Double
+    let ocrText: String
+    let imagePath: String
+}
+
 final class MeetingStore {
 
     static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -54,6 +62,20 @@ final class MeetingStore {
             timestamp TEXT NOT NULL,
             text TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pauses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id),
+            start REAL NOT NULL,
+            end REAL NOT NULL,
+            offset_seconds REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS visual_captures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id),
+            elapsed_seconds REAL NOT NULL,
+            ocr_text TEXT NOT NULL,
+            image_path TEXT NOT NULL
+        );
         """)
         try migrateSchemaIfNeeded()
     }
@@ -95,7 +117,8 @@ final class MeetingStore {
         wavPath: String?,
         segments: [TranscriptSegment],
         quickNotes: [QuickNote],
-        ownNotes: String = ""
+        ownNotes: String = "",
+        pauses: [PauseInterval] = []
     ) throws -> Int64 {
         try execute("BEGIN")
         do {
@@ -120,6 +143,7 @@ final class MeetingStore {
 
             try insertSegments(segments, meetingID: meetingID)
             try insertQuickNotes(quickNotes, meetingID: meetingID)
+            try insertPauses(pauses, meetingID: meetingID)
 
             try execute("COMMIT")
             return meetingID
@@ -136,6 +160,7 @@ final class MeetingStore {
         try execute("""
         DELETE FROM segments WHERE meeting_id IN (SELECT id FROM meetings WHERE date < \(cutoff));
         DELETE FROM notes WHERE meeting_id IN (SELECT id FROM meetings WHERE date < \(cutoff));
+        DELETE FROM pauses WHERE meeting_id IN (SELECT id FROM meetings WHERE date < \(cutoff));
         DELETE FROM meetings WHERE date < \(cutoff);
         """)
         return Int(sqlite3_changes(db))
@@ -268,6 +293,42 @@ final class MeetingStore {
         }
     }
 
+    private func insertPauses(_ pauses: [PauseInterval], meetingID: Int64) throws {
+        guard !pauses.isEmpty else { return }
+        let insert = try prepare(
+            "INSERT INTO pauses (meeting_id, start, end, offset_seconds) VALUES (?, ?, ?, ?)"
+        )
+        defer { sqlite3_finalize(insert) }
+        for pause in pauses {
+            sqlite3_reset(insert)
+            sqlite3_bind_int64(insert, 1, meetingID)
+            sqlite3_bind_double(insert, 2, pause.start.timeIntervalSince1970)
+            sqlite3_bind_double(insert, 3, pause.end.timeIntervalSince1970)
+            sqlite3_bind_double(insert, 4, pause.transcriptOffsetSeconds)
+            guard sqlite3_step(insert) == SQLITE_DONE else {
+                throw Self.error(db, context: "insertando pausa")
+            }
+        }
+    }
+
+    func pauses(meetingID: Int64) throws -> [PauseInterval] {
+        let query = try prepare(
+            "SELECT start, end, offset_seconds FROM pauses WHERE meeting_id = ? ORDER BY start"
+        )
+        defer { sqlite3_finalize(query) }
+        sqlite3_bind_int64(query, 1, meetingID)
+
+        var result: [PauseInterval] = []
+        while sqlite3_step(query) == SQLITE_ROW {
+            result.append(PauseInterval(
+                start: Date(timeIntervalSince1970: sqlite3_column_double(query, 0)),
+                end: Date(timeIntervalSince1970: sqlite3_column_double(query, 1)),
+                transcriptOffsetSeconds: sqlite3_column_double(query, 2)
+            ))
+        }
+        return result
+    }
+
     func segments(meetingID: Int64) throws -> [TranscriptSegment] {
         let query = try prepare(
             "SELECT start, end, speaker, text FROM segments WHERE meeting_id = ? ORDER BY start"
@@ -354,6 +415,54 @@ final class MeetingStore {
         guard sqlite3_step(update) == SQLITE_DONE else {
             throw Self.error(db, context: "renombrando hablante")
         }
+    }
+
+    func insertVisualCaptures(
+        _ captures: [(elapsedSeconds: Double, ocrText: String, imagePath: String)],
+        meetingID: Int64
+    ) throws {
+        guard !captures.isEmpty else { return }
+        let insert = try prepare(
+            "INSERT INTO visual_captures (meeting_id, elapsed_seconds, ocr_text, image_path) VALUES (?, ?, ?, ?)"
+        )
+        defer { sqlite3_finalize(insert) }
+        for capture in captures {
+            sqlite3_reset(insert)
+            sqlite3_bind_int64(insert, 1, meetingID)
+            sqlite3_bind_double(insert, 2, capture.elapsedSeconds)
+            sqlite3_bind_text(insert, 3, cipher.encrypt(capture.ocrText), -1, Self.sqliteTransient)
+            sqlite3_bind_text(insert, 4, capture.imagePath, -1, Self.sqliteTransient)
+            guard sqlite3_step(insert) == SQLITE_DONE else {
+                throw Self.error(db, context: "insertando captura visual")
+            }
+        }
+    }
+
+    func visualCaptures(meetingID: Int64) throws -> [VisualCaptureRow] {
+        let query = try prepare(
+            "SELECT id, elapsed_seconds, ocr_text, image_path FROM visual_captures WHERE meeting_id = ? ORDER BY elapsed_seconds"
+        )
+        defer { sqlite3_finalize(query) }
+        sqlite3_bind_int64(query, 1, meetingID)
+
+        var result: [VisualCaptureRow] = []
+        while sqlite3_step(query) == SQLITE_ROW {
+            result.append(VisualCaptureRow(
+                id: sqlite3_column_int64(query, 0),
+                meetingID: meetingID,
+                elapsedSeconds: sqlite3_column_double(query, 1),
+                ocrText: cipher.decrypt(String(cString: sqlite3_column_text(query, 2))),
+                imagePath: String(cString: sqlite3_column_text(query, 3))
+            ))
+        }
+        return result
+    }
+
+    @discardableResult
+    func deleteVisualCaptures(meetingID: Int64) throws -> [String] {
+        let paths = try visualCaptures(meetingID: meetingID).map(\.imagePath)
+        try execute("DELETE FROM visual_captures WHERE meeting_id = \(meetingID)")
+        return paths
     }
 
     private func execute(_ sql: String) throws {

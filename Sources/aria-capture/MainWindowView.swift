@@ -300,11 +300,37 @@ struct MeetingRow: View {
     }
 }
 
+struct PausesSummaryView: View {
+    let recordedSeconds: Double
+    let pauses: [PauseInterval]
+
+    private var totalPaused: Double { PauseLogic.totalPausedSeconds(pauses) }
+    private var wallClock: Double { PauseLogic.wallClockSeconds(recordedSeconds: recordedSeconds, pauses: pauses) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(
+                "Duración grabada real: \(MeetingRow.duration(recordedSeconds))"
+                + " · Reunión completa: \(MeetingRow.duration(wallClock))"
+                + " (\(pauses.count) pausa\(pauses.count == 1 ? "" : "s"), \(MeetingRow.duration(totalPaused)) en pausa)"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            ForEach(Array(pauses.enumerated()), id: \.offset) { _, pause in
+                Text("⏸ \(PauseLogic.rangeLabel(for: pause))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 struct MeetingDetailView: View {
     let meetingID: Int64
     @State private var record: MeetingRecord?
     @State private var noteMarkdown = ""
     @State private var segments: [TranscriptSegment] = []
+    @State private var pauses: [PauseInterval] = []
     @State private var errorMessage: String?
     @State private var shareMenuOpen = false
     @State private var editingSegmentIndex: Int?
@@ -312,6 +338,7 @@ struct MeetingDetailView: View {
     @State private var renamingSpeaker: String?
     @State private var newSpeakerName = ""
     @State private var showRegenerateAlert = false
+    @State private var visualCaptureCount = 0
 
     var body: some View {
         ScrollView {
@@ -351,6 +378,10 @@ struct MeetingDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                    if !pauses.isEmpty {
+                        PausesSummaryView(recordedSeconds: record.durationSeconds, pauses: pauses)
+                    }
+
                     Text("Nota").font(.headline)
                     if let attributed = try? AttributedString(
                         markdown: noteMarkdown,
@@ -363,6 +394,18 @@ struct MeetingDetailView: View {
 
                     Divider()
                     OwnNotesSectionView(meetingID: meetingID)
+
+                    if visualCaptureCount > 0 {
+                        Divider()
+                        HStack {
+                            Label("Contexto visual: \(visualCaptureCount) captura(s)", systemImage: "eye")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Borrar capturas") { deleteVisualCaptures() }
+                                .font(.caption)
+                        }
+                    }
 
                     if !segments.isEmpty {
                         Divider()
@@ -466,10 +509,28 @@ struct MeetingDetailView: View {
             }
             record = found
             segments = try store.segments(meetingID: meetingID)
+            pauses = try store.pauses(meetingID: meetingID)
             noteMarkdown = (try? String(contentsOf: URL(fileURLWithPath: found.notePath), encoding: .utf8))
                 ?? "_(no se pudo leer la nota en \(found.notePath))_"
+            visualCaptureCount = (try? store.visualCaptures(meetingID: meetingID).count) ?? 0
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func deleteVisualCaptures() {
+        do {
+            let store = try MeetingStore()
+            let paths = try store.deleteVisualCaptures(meetingID: meetingID)
+            for path in paths {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            if let first = paths.first {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: first).deletingLastPathComponent())
+            }
+            visualCaptureCount = 0
+        } catch {
+            errorMessage = "Error borrando capturas: \(error.localizedDescription)"
         }
     }
 
@@ -672,9 +733,31 @@ struct SettingsSectionView: View {
     @State private var savedMessage: String?
     @State private var slackWebhookInput = ""
     @State private var slackSavedMessage: String?
+    @State private var loginItemEnabled = LoginItemManager.isEnabled
+    @State private var loginItemMessage: String?
 
     var body: some View {
         Form {
+            Section("Inicio") {
+                if LoginItemManager.isRunningFromAppBundle {
+                    Toggle("Abrir NotarIA al iniciar sesión", isOn: Binding(
+                        get: { loginItemEnabled },
+                        set: { newValue in
+                            loginItemEnabled = newValue
+                            loginItemMessage = LoginItemManager.setEnabled(newValue)
+                            if loginItemMessage != nil { loginItemEnabled = LoginItemManager.isEnabled }
+                        }
+                    ))
+                } else {
+                    Text("Abrir al iniciar sesión solo está disponible desde NotarIA.app instalada (ejecuta scripts/install-local.sh), no desde el binario de desarrollo.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(LoginItemManager.statusDescription).font(.caption).foregroundStyle(.secondary)
+                if let loginItemMessage {
+                    Text(loginItemMessage).font(.caption).foregroundStyle(.red)
+                }
+            }
             Section("Permisos") {
                 permissionRow("Micrófono", status: micStatus, settingsURL: Permissions.micSettingsURL)
                 permissionRow("Grabación de pantalla", status: screenStatus, settingsURL: Permissions.screenSettingsURL)
@@ -722,6 +805,26 @@ struct SettingsSectionView: View {
                     in: 0...365
                 )
                 TextField("Calendarios a ignorar (separados por coma)", text: $config.calendarIgnore)
+            }
+            Section("Contexto visual") {
+                Toggle("Activar contexto visual (capturas + OCR local)", isOn: $config.visualContextEnabled)
+                Text("""
+                Apagado por defecto. Si lo activas, mientras grabas Aria toma capturas de pantalla \
+                completa cuando cambia el contenido (o cada 30 s como mínimo) y les hace OCR 100% \
+                local con Vision — la imagen nunca sale de este Mac ni se sube a ningún servicio. \
+                Se omite si la app al frente está en la lista de exclusión. Las capturas quedan \
+                junto a la nota en Reuniones/<nota>/capturas/ y se pueden borrar desde el detalle \
+                de cada reunión.
+                """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                TextField("Apps excluidas (bundle id, separadas por coma)", text: $config.visualContextExcludedApps)
+                Stepper(
+                    "Sensibilidad al cambio: \(String(format: "%.1f%%", config.visualContextChangeThreshold * 100))",
+                    value: $config.visualContextChangeThreshold,
+                    in: 0.005...0.2,
+                    step: 0.005
+                )
             }
             ImportSectionView()
             Section("Compartir & Exportar") {

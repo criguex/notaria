@@ -17,6 +17,9 @@ struct AriaConfig: Codable {
     var aiModel = ""
     var aiBaseURL = ""
     var notionDatabaseID: String = ""
+    var visualContextEnabled = false
+    var visualContextExcludedApps = VisualAppExclusionPolicy.defaultExcludedBundleIDs.joined(separator: ",")
+    var visualContextChangeThreshold = 0.02
 
     init() {}
 
@@ -38,6 +41,9 @@ struct AriaConfig: Codable {
         aiModel = try container.decodeIfPresent(String.self, forKey: .aiModel) ?? aiModel
         aiBaseURL = try container.decodeIfPresent(String.self, forKey: .aiBaseURL) ?? aiBaseURL
         notionDatabaseID = try container.decodeIfPresent(String.self, forKey: .notionDatabaseID) ?? notionDatabaseID
+        visualContextEnabled = try container.decodeIfPresent(Bool.self, forKey: .visualContextEnabled) ?? visualContextEnabled
+        visualContextExcludedApps = try container.decodeIfPresent(String.self, forKey: .visualContextExcludedApps) ?? visualContextExcludedApps
+        visualContextChangeThreshold = try container.decodeIfPresent(Double.self, forKey: .visualContextChangeThreshold) ?? visualContextChangeThreshold
     }
 
     var ignoredCalendars: [String] {
@@ -45,6 +51,10 @@ struct AriaConfig: Codable {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             .filter { !$0.isEmpty }
+    }
+
+    var excludedVisualContextBundleIDs: [String] {
+        VisualAppExclusionPolicy.parsedList(visualContextExcludedApps)
     }
 
     static let validWhisperModels = ["tiny", "base", "small", "medium", "large-v3"]
@@ -125,6 +135,9 @@ struct AriaConfig: Codable {
         aiBaseURL        = \(aiBaseURL.isEmpty ? "(default del proveedor)" : aiBaseURL)
         slackWebhookURL  = \(KeychainStore.slackWebhookURL() == nil ? "(no configurado)" : "●●●●●●●● (Keychain)")
         notionDatabaseID = \(notionDatabaseID.isEmpty ? "(no configurado)" : notionDatabaseID)
+        visualContextEnabled = \(visualContextEnabled) (capturas + OCR local durante la grabación)
+        visualContextExcludedApps = \(visualContextExcludedApps.isEmpty ? "(ninguna)" : visualContextExcludedApps)
+        visualContextChangeThreshold = \(visualContextChangeThreshold) (fracción de la huella de luminancia que debe cambiar para disparar una captura)
         (archivo: \(Self.fileURL.path))
         """
     }
@@ -148,6 +161,9 @@ struct AriaConfig: Codable {
         case "aiBaseURL": return aiBaseURL.isEmpty ? "(ninguno)" : aiBaseURL
         case "slackWebhookURL": return KeychainStore.slackWebhookURL() == nil ? "(no configurado)" : "●●●●●●●● (Keychain)"
         case "notionDatabaseID": return notionDatabaseID.isEmpty ? "(no configurado)" : "●●●●●●●●"
+        case "visualContextEnabled": return String(visualContextEnabled)
+        case "visualContextExcludedApps": return visualContextExcludedApps.isEmpty ? "(ninguna)" : visualContextExcludedApps
+        case "visualContextChangeThreshold": return String(visualContextChangeThreshold)
         default: return nil
         }
     }
@@ -218,8 +234,20 @@ struct AriaConfig: Codable {
             }
         case "notionDatabaseID":
             notionDatabaseID = value
+        case "visualContextEnabled":
+            guard let flag = Bool(value.lowercased()) else {
+                throw Self.validationError("visualContextEnabled debe ser true o false")
+            }
+            visualContextEnabled = flag
+        case "visualContextExcludedApps":
+            visualContextExcludedApps = value == "(ninguna)" ? "" : value
+        case "visualContextChangeThreshold":
+            guard let threshold = Double(value), threshold > 0, threshold < 1 else {
+                throw Self.validationError("visualContextChangeThreshold debe ser un número entre 0 y 1 (fracción de cambio)")
+            }
+            visualContextChangeThreshold = threshold
         default:
-            throw Self.validationError("Clave desconocida '\(key)'. Válidas: claudeModel, obsidianDir, keepAudio, whisperModel, systemPromptPath, alwaysOn, retentionDays, language, transcriptPolish, showUpcoming, ignoreNoParticipants, calendarIgnore, aiProvider, aiModel, aiBaseURL, slackWebhookURL, notionDatabaseID")
+            throw Self.validationError("Clave desconocida '\(key)'. Válidas: claudeModel, obsidianDir, keepAudio, whisperModel, systemPromptPath, alwaysOn, retentionDays, language, transcriptPolish, showUpcoming, ignoreNoParticipants, calendarIgnore, aiProvider, aiModel, aiBaseURL, slackWebhookURL, notionDatabaseID, visualContextEnabled, visualContextExcludedApps, visualContextChangeThreshold")
         }
     }
 

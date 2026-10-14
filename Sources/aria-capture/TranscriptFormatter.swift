@@ -20,4 +20,18 @@ enum TranscriptFormatter {
     static func render(_ segments: [TranscriptSegment]) -> String {
         segments.map(line).joined(separator: "\n")
     }
+
+    /// Igual que `render(_:)` pero intercala los marcadores de pausa en el punto correcto del
+    /// eje de tiempo activo (mismo eje que `segment.start`, ya que no se graba audio en pausa).
+    static func render(_ segments: [TranscriptSegment], pauses: [PauseInterval]) -> String {
+        guard !pauses.isEmpty else { return render(segments) }
+        var items: [(offset: TimeInterval, isPause: Bool, text: String)] =
+            segments.map { (offset: $0.start, isPause: false, text: line($0)) }
+        items += pauses.map { (offset: $0.transcriptOffsetSeconds, isPause: true, text: PauseLogic.marker(for: $0)) }
+        items.sort { lhs, rhs in
+            if lhs.offset != rhs.offset { return lhs.offset < rhs.offset }
+            return lhs.isPause && !rhs.isPause
+        }
+        return items.map(\.text).joined(separator: "\n")
+    }
 }
