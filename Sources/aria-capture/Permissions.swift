@@ -60,3 +60,52 @@ enum RequiredPermissions {
         !dictationOnly
     }
 }
+
+/// Acción que debe ofrecer la fila de un permiso en Ajustes, derivada del
+/// estado real — nunca se pide Grabación de pantalla sola a ciegas, solo se
+/// decide qué botón mostrar; quien pulsa decide si de verdad se pide.
+enum PermissionRowAction: Equatable {
+    case none
+    case request
+    case openSystemSettings
+}
+
+enum MicrophonePermissionPolicy {
+    static func statusLabel(_ status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized: return "Concedido"
+        case .notDetermined: return "Sin solicitar"
+        default: return "Denegado"
+        }
+    }
+
+    static func action(_ status: AVAuthorizationStatus) -> PermissionRowAction {
+        switch status {
+        case .authorized: return .none
+        case .notDetermined: return .request
+        default: return .openSystemSettings
+        }
+    }
+
+    static func actionLabel(_ status: AVAuthorizationStatus) -> String? {
+        switch action(status) {
+        case .none: return nil
+        case .request: return "Conceder acceso"
+        case .openSystemSettings: return "Abrir Ajustes del Sistema…"
+        }
+    }
+}
+
+enum ScreenRecordingPermissionPolicy {
+    static func statusLabel(granted: Bool) -> String {
+        granted ? "Concedido" : "Denegado"
+    }
+
+    static func action(granted: Bool) -> PermissionRowAction {
+        granted ? .none : .request
+    }
+
+    static func actionLabel(granted: Bool) -> String? {
+        granted ? nil : "Conceder acceso"
+    }
+}

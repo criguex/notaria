@@ -34,4 +34,31 @@ enum TranscriptFormatter {
         }
         return items.map(\.text).joined(separator: "\n")
     }
+
+    /// Mismo intercalado que `render(_:pauses:)` pero preservando el índice original de cada
+    /// segmento (para editar/renombrar por índice) en vez de una sola cadena de texto.
+    static func timeline(segments: [TranscriptSegment], pauses: [PauseInterval]) -> [TranscriptTimelineItem] {
+        var items: [(offset: TimeInterval, isPause: Bool, item: TranscriptTimelineItem)] =
+            segments.enumerated().map {
+                (offset: $0.element.start, isPause: false, item: .segment(index: $0.offset, segment: $0.element))
+            }
+        items += pauses.map { (offset: $0.transcriptOffsetSeconds, isPause: true, item: .pause($0)) }
+        items.sort { lhs, rhs in
+            if lhs.offset != rhs.offset { return lhs.offset < rhs.offset }
+            return lhs.isPause && !rhs.isPause
+        }
+        return items.map(\.item)
+    }
+}
+
+enum TranscriptTimelineItem: Equatable {
+    case segment(index: Int, segment: TranscriptSegment)
+    case pause(PauseInterval)
+
+    var sortOffset: TimeInterval {
+        switch self {
+        case .segment(_, let segment): return segment.start
+        case .pause(let pause): return pause.transcriptOffsetSeconds
+        }
+    }
 }

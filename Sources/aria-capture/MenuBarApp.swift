@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Darwin
+import EventKit
 import Foundation
 import SwiftUI
 
@@ -49,6 +50,9 @@ final class RecordingController: ObservableObject {
             if let purged = try? store.purge(olderThanDays: config.retentionDays), purged > 0 {
                 print("[retención] \(purged) reunión(es) de más de \(config.retentionDays) días eliminadas del historial.")
             }
+        }
+        if CalendarAccessPolicy.shouldRequestOnLaunch(MeetingCalendar.authorizationStatus) {
+            Task { _ = try? await MeetingCalendar.shared.requestAccess() }
         }
         callTimer = Timer.scheduledTimer(withTimeInterval: 7, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -425,7 +429,8 @@ final class RecordingController: ObservableObject {
                         segments: segments,
                         quickNotes: NotesStore().all(),
                         ownNotes: ownNotes,
-                        pauses: pauses
+                        pauses: pauses,
+                        eventIdentifier: calendarMeeting?.eventIdentifier
                    ) {
                     try? store.insertVisualCaptures(savedVisualImagePaths, meetingID: meetingID)
                     try? store.saveSpeakerEmbeddings(speakerResolution.embeddings, meetingID: meetingID)
@@ -503,6 +508,74 @@ struct NotesWindowView: View {
     }
 }
 
+struct TranscriptWindowView: View {
+    let meetingID: Int64?
+    @State private var title = "Transcripción"
+    @State private var segments: [TranscriptSegment] = []
+    @State private var pauses: [PauseInterval] = []
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            } else if segments.isEmpty {
+                Text("Sin transcripción.").foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(
+                            Array(TranscriptFormatter.timeline(segments: segments, pauses: pauses).enumerated()),
+                            id: \.offset
+                        ) { _, item in
+                            switch item {
+                            case .segment(_, let segment):
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("[\(MeetingDetailView.timestamp(segment.start))] \(segment.speaker):")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(segment.text)
+                                        .textSelection(.enabled)
+                                }
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .cornerRadius(4)
+                            case .pause(let pause):
+                                Text("⏸ \(PauseLogic.rangeLabel(for: pause))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding()
+        .frame(minWidth: 420, minHeight: 360)
+        .task(id: meetingID) { load() }
+    }
+
+    private func load() {
+        guard let meetingID else {
+            errorMessage = "Sin reunión seleccionada."
+            return
+        }
+        do {
+            let store = try MeetingStore()
+            if let record = try store.recentMeetings(limit: 10_000).first(where: { $0.id == meetingID }) {
+                title = record.title
+            }
+            segments = try store.segments(meetingID: meetingID)
+            pauses = try store.pauses(meetingID: meetingID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 struct ChatWindowView: View {
     @State private var question = ""
     @State private var conversation = ""
@@ -565,9 +638,16 @@ struct AriaMenuView: View {
     }
 
     private var cardMeeting: CalendarMeeting? { controller.meetingNow ?? controller.upcomingMeeting }
+    private var calendarStatus: EKAuthorizationStatus { MeetingCalendar.authorizationStatus }
 
     var body: some View {
-        if let meeting = cardMeeting {
+        if let message = CalendarAccessPolicy.message(for: calendarStatus) {
+            Text(message).font(.caption).foregroundStyle(.secondary)
+            if let actionLabel = CalendarAccessPolicy.actionLabel(for: calendarStatus) {
+                Button(actionLabel) { handleCalendarAccessAction() }
+            }
+            Divider()
+        } else if let meeting = cardMeeting {
             let card = MeetingCardBuilder.build(
                 meeting: meeting,
                 at: Date(),
@@ -652,6 +732,19 @@ struct AriaMenuView: View {
         Divider()
         Button("Salir de NotarIA") { NSApp.terminate(nil) }
     }
+
+    private func handleCalendarAccessAction() {
+        switch CalendarAccessPolicy.action(for: calendarStatus) {
+        case .none:
+            break
+        case .request:
+            Task { _ = try? await MeetingCalendar.shared.requestAccess() }
+        case .openSystemSettings:
+            if let url = URL(string: CalendarAccessPolicy.systemSettingsURL) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
 }
 
 struct AriaMenuBarApp: App {
@@ -680,6 +773,10 @@ struct AriaMenuBarApp: App {
             NotesWindowView()
         }
         .defaultSize(width: 460, height: 320)
+        WindowGroup("Transcripción", id: "aria-transcript", for: Int64.self) { $meetingID in
+            TranscriptWindowView(meetingID: meetingID)
+        }
+        .defaultSize(width: 520, height: 700)
     }
 
     private var menuBarIcon: MenuBarIconKind {

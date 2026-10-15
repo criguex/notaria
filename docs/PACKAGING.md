@@ -10,7 +10,7 @@ Hace build release con el mismo toolchain de `scripts/build.sh` (Xcode, no CLT) 
 - `Contents/Resources/menubar-22.png`, `menubar-44.png`, `ggml-metal.metal` — copiados desde los `.bundle` que genera SwiftPM en `.build/release/` (ver más abajo por qué no se usan esos `.bundle` directamente).
 - `Contents/Info.plist`.
 
-Al final firma ad-hoc y verifica (`codesign --verify --deep --strict`).
+Al final firma (con la identidad local estable si existe, o ad-hoc si no — ver "Firma" más abajo) y verifica (`codesign --verify --deep --strict`).
 
 ## Por qué los recursos no quedan como los puso SwiftPM
 SwiftPM genera `Aria_aria-capture.bundle` (icono + glifos de barra de menú) y `whisper_whisper.bundle` (shader `ggml-metal.metal`) como carpetas sueltas junto al binario en `.build/release/`. El `resource_bundle_accessor.swift`/`.m` generado los busca en tiempo de ejecución con `Bundle.main.bundleURL.appendingPathComponent("<bundle>")`, que para un `.app` es la **raíz** del bundle (al lado de `Contents`), no `Contents/Resources`.
@@ -34,10 +34,29 @@ Ningún cambio toca `Package.swift`, `Vendor/whisper.cpp/` ni el accessor genera
 `aria-capture` sin argumentos (como lo lanza Launch Services desde el .app) entra directo en modo `menubar`. `aria-capture --version` imprime versión y build (leídos de `Info.plist`) y sale sin levantar UI — útil para scripts/smoke tests.
 
 ## Firma
-Firma ad-hoc: `codesign --force --deep -s - --entitlements scripts/entitlements.plist dist/NotarIA.app`.
+
+### Identidad de firma local estable (recomendado)
+```bash
+scripts/setup-signing-identity.sh
+```
+Crea, si no existe, un certificado de firma de código **autofirmado** llamado `NotarIA Local Signing` en el llavero de login (`~/Library/Keychains/login.keychain-db`) y lo importa autorizando a `/usr/bin/codesign` a usarlo sin preguntar cada vez (`security import ... -T /usr/bin/codesign`). Es idempotente: si la identidad ya existe, no hace nada y sale con `0`.
+
+`scripts/package-app.sh` detecta esa identidad con `security find-identity -p codesigning` y, si existe, firma con ella en vez de ad-hoc. **Por qué importa**: la firma ad-hoc (`-s -`) deriva el Designated Requirement (DR) del `cdhash` (hash del binario), que cambia en **cada build**; TCC usa el DR para identificar la app y conservar los permisos de Calendario/Micrófono/Grabación de pantalla, así que un DR que cambia hace que cada reinstalación se trate como una app nueva y pierda todos los permisos otorgados. Firmar con un certificado (aunque sea autofirmado) ancla el DR al **certificado + `CFBundleIdentifier`**, no al contenido del binario, así que permanece estable entre builds mientras no cambie el bundle id (`com.criguex.notaria`, no tocar).
+
+Verificado en este repo firmando dos builds reales consecutivos (`scripts/package-app.sh` dos veces, con una recompilación real de por medio) y comparando `codesign -d -r- dist/NotarIA.app`:
+- Con `NotarIA Local Signing`: `designated => identifier "com.criguex.notaria" and certificate leaf = H"<hash del certificado>"` — **idéntico** en ambos builds.
+- Con ad-hoc (`-s -`): `designated => cdhash H"<hash del binario>"` — **distinto** en cada build (esto es la causa raíz del bug "Hoy no ve el calendario pero `aria-capture calendar` sí").
+
+No requiere marcar el certificado como "Siempre confiar" en Keychain Access: `codesign`, `codesign --verify --deep --strict` y la firma real del `.app` funcionan igual sin ese paso (probado). Por eso `setup-signing-identity.sh` no lo hace — evita abrir una vía de bloqueo interactivo que no hace falta.
+
+Si `security import` o la firma de verificación no terminan en segundos razonables (macOS pidiendo la contraseña del llavero de login o una confirmación de confianza que el script no puede responder), `setup-signing-identity.sh` no se queda colgado: corta por timeout, imprime el comando exacto a correr manualmente en Terminal, y sale con código `1`.
+
+### Firma ad-hoc (fallback)
+Si no existe la identidad `NotarIA Local Signing`, `scripts/package-app.sh` cae a `codesign --force --deep -s - --entitlements scripts/entitlements.plist dist/NotarIA.app` con un aviso en stderr. Sirve para compilar/probar, pero cada reinstalación pierde los permisos TCC (ver arriba) — para uso diario conviene correr `scripts/setup-signing-identity.sh` una vez.
+
 `scripts/entitlements.plist` está vacío a propósito: NotarIA corre **sin App Sandbox**, así que no necesita entitlements de sandbox (`com.apple.security.device.*`, `com.apple.security.automation.apple-events`, etc.) — los permisos de Micrófono/Pantalla/Calendario/Automatización los arbitra TCC directamente contra las *usage descriptions* del `Info.plist` y las llamadas a las APIs correspondientes (`AVCaptureDevice`, `CGRequestScreenCaptureAccess`, `EventKit`, `osascript`). Si en el futuro se adopta App Sandbox, ahí sí haría falta declarar esos entitlements y revalidar que ScreenCaptureKit/AppleEvents siguen funcionando dentro del sandbox.
 
-**Firma ad-hoc = solo para este Mac.** Para distribución pública (otros Macs, Gatekeeper sin aviso) haría falta:
+**Ninguna de las dos firmas (identidad local o ad-hoc) sirve para distribución pública** (otros Macs, Gatekeeper sin aviso). Para eso haría falta:
 1. Developer ID Application (cuenta de pago de Apple Developer).
 2. `codesign` con ese certificado + hardened runtime.
 3. `xcrun notarytool submit` y pegar el ticket (`stapler`).

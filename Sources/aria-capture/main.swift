@@ -468,7 +468,8 @@ case "enhance":
                     notePath: url.path,
                     wavPath: URL(fileURLWithPath: path).path,
                     segments: segments,
-                    quickNotes: NotesStore().all()
+                    quickNotes: NotesStore().all(),
+                    eventIdentifier: calendarMeeting?.eventIdentifier
                 )
                 try store.saveSpeakerEmbeddings(speakerEmbeddingsToSave, meetingID: meetingID)
             } catch {
@@ -512,7 +513,8 @@ case "enhance":
                 notePath: url.path,
                 wavPath: URL(fileURLWithPath: path).path,
                 segments: segments,
-                quickNotes: NotesStore().all()
+                quickNotes: NotesStore().all(),
+                eventIdentifier: calendarMeeting?.eventIdentifier
             )
             try store.saveSpeakerEmbeddings(speakerEmbeddingsToSave, meetingID: meetingID)
         } catch {

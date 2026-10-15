@@ -84,6 +84,35 @@ final class TranscriptLogicTests: XCTestCase {
         XCTAssertEqual(TranscriptFormatter.line(segment), "[01:05] Yo: Hola")
     }
 
+    func testTimelineOrdersSegmentsAndPausesByOffset() {
+        let segments = [
+            TranscriptSegment(start: 0, end: 5, text: "Primero", speaker: "Yo"),
+            TranscriptSegment(start: 20, end: 25, text: "Segundo", speaker: "Otros")
+        ]
+        let pauses = [PauseInterval(start: Date(timeIntervalSince1970: 100), end: Date(timeIntervalSince1970: 160), transcriptOffsetSeconds: 5)]
+        let timeline = TranscriptFormatter.timeline(segments: segments, pauses: pauses)
+        XCTAssertEqual(timeline.count, 3)
+        XCTAssertEqual(timeline[0], .segment(index: 0, segment: segments[0]))
+        XCTAssertEqual(timeline[1], .pause(pauses[0]))
+        XCTAssertEqual(timeline[2], .segment(index: 1, segment: segments[1]))
+    }
+
+    func testTimelineTieBreaksPauseBeforeSegmentAtSameOffset() {
+        let segments = [TranscriptSegment(start: 10, end: 15, text: "Texto", speaker: "Yo")]
+        let pauses = [PauseInterval(start: Date(), end: Date(), transcriptOffsetSeconds: 10)]
+        let timeline = TranscriptFormatter.timeline(segments: segments, pauses: pauses)
+        XCTAssertEqual(timeline, [.pause(pauses[0]), .segment(index: 0, segment: segments[0])])
+    }
+
+    func testTimelineWithoutPausesKeepsSegmentIndices() {
+        let segments = [
+            TranscriptSegment(start: 0, end: 5, text: "A", speaker: "Yo"),
+            TranscriptSegment(start: 5, end: 10, text: "B", speaker: "Yo")
+        ]
+        let timeline = TranscriptFormatter.timeline(segments: segments, pauses: [])
+        XCTAssertEqual(timeline, [.segment(index: 0, segment: segments[0]), .segment(index: 1, segment: segments[1])])
+    }
+
     func testExtractTitle() {
         XCTAssertEqual(MeetingEnhancer.extractTitle(from: "# Sync semanal\n\ncuerpo"), "Sync semanal")
         XCTAssertNil(MeetingEnhancer.extractTitle(from: "sin encabezado"))

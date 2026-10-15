@@ -124,12 +124,45 @@ final class MeetingStore {
         segments: [TranscriptSegment],
         quickNotes: [QuickNote],
         ownNotes: String = "",
-        pauses: [PauseInterval] = []
+        pauses: [PauseInterval] = [],
+        eventIdentifier: String? = nil
+    ) throws -> Int64 {
+        do {
+            return try insertMeeting(
+                date: date, title: title, durationSeconds: durationSeconds, notePath: notePath,
+                wavPath: wavPath, segments: segments, quickNotes: quickNotes, ownNotes: ownNotes,
+                pauses: pauses, eventIdentifier: eventIdentifier
+            )
+        } catch {
+            guard eventIdentifier != nil, Self.isUniqueConstraintViolation(error) else { throw error }
+            return try insertMeeting(
+                date: date, title: title, durationSeconds: durationSeconds, notePath: notePath,
+                wavPath: wavPath, segments: segments, quickNotes: quickNotes, ownNotes: ownNotes,
+                pauses: pauses, eventIdentifier: nil
+            )
+        }
+    }
+
+    private static func isUniqueConstraintViolation(_ error: Error) -> Bool {
+        (error as NSError).localizedDescription.localizedCaseInsensitiveContains("UNIQUE constraint")
+    }
+
+    private func insertMeeting(
+        date: Date,
+        title: String,
+        durationSeconds: Double,
+        notePath: String,
+        wavPath: String?,
+        segments: [TranscriptSegment],
+        quickNotes: [QuickNote],
+        ownNotes: String,
+        pauses: [PauseInterval],
+        eventIdentifier: String?
     ) throws -> Int64 {
         try execute("BEGIN")
         do {
             let insert = try prepare(
-                "INSERT INTO meetings (date, title, duration, note_path, wav_path, own_notes) VALUES (?, ?, ?, ?, ?, ?)"
+                "INSERT INTO meetings (date, title, duration, note_path, wav_path, own_notes, external_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
             )
             defer { sqlite3_finalize(insert) }
             sqlite3_bind_double(insert, 1, date.timeIntervalSince1970)
@@ -142,6 +175,11 @@ final class MeetingStore {
                 sqlite3_bind_null(insert, 5)
             }
             sqlite3_bind_text(insert, 6, cipher.encrypt(ownNotes), -1, Self.sqliteTransient)
+            if let eventIdentifier, !eventIdentifier.isEmpty {
+                sqlite3_bind_text(insert, 7, eventIdentifier, -1, Self.sqliteTransient)
+            } else {
+                sqlite3_bind_null(insert, 7)
+            }
             guard sqlite3_step(insert) == SQLITE_DONE else {
                 throw Self.error(db, context: "insertando meeting")
             }

@@ -13,6 +13,7 @@ struct CalendarMeeting: Equatable {
     /// (ver `CalendarPromptPolicy`): no debe disparar el aviso de grabación ni
     /// mostrar "Unirse y tomar notas" en la tarjeta.
     var promptExcluded: Bool = false
+    var eventIdentifier: String? = nil
 
     var hasParticipantsOrLink: Bool { !attendees.isEmpty || videoLink != nil }
 }
@@ -163,12 +164,16 @@ final class MeetingCalendar {
 
     private let store = EKEventStore()
 
+    static var authorizationStatus: EKAuthorizationStatus {
+        EKEventStore.authorizationStatus(for: .event)
+    }
+
     static var isAuthorized: Bool {
-        EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        CalendarAccessPolicy.hasFullAccess(authorizationStatus)
     }
 
     static var statusDescription: String {
-        switch EKEventStore.authorizationStatus(for: .event) {
+        switch authorizationStatus {
         case .fullAccess: return "concedido"
         case .notDetermined: return "sin solicitar (corre: aria-capture calendar)"
         case .writeOnly: return "solo escritura — insuficiente"
@@ -235,7 +240,8 @@ final class MeetingCalendar {
                 isAllDay: event.isAllDay,
                 companies: CalendarMeeting.uniqueAttendees(companies),
                 videoLink: CalendarMeeting.videoLink(in: [event.location, event.notes, event.url?.absoluteString]),
-                promptExcluded: promptExcluded
+                promptExcluded: promptExcluded,
+                eventIdentifier: event.eventIdentifier
             )
         }
     }

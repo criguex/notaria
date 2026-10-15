@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CoreGraphics
+import EventKit
 import SwiftUI
 
 enum MainSidebarItem: String, CaseIterable, Identifiable {
@@ -56,25 +57,59 @@ struct MainWindowView: View {
     }
 }
 
+struct AgendaMeetingSelection: Identifiable {
+    let id: String
+    let meeting: CalendarMeeting
+    let matchedMeetingID: Int64?
+
+    init(meeting: CalendarMeeting, matchedMeetingID: Int64?) {
+        self.meeting = meeting
+        self.matchedMeetingID = matchedMeetingID
+        self.id = meeting.eventIdentifier ?? "\(meeting.start.timeIntervalSince1970)-\(meeting.title)"
+    }
+}
+
 struct TodaySectionView: View {
     @ObservedObject var controller: RecordingController
     @State private var todayMeetings: [CalendarMeeting] = []
+    @State private var recentRecords: [MeetingRecord] = []
+    @State private var selectedAgendaItem: AgendaMeetingSelection?
+    @State private var calendarStatus: EKAuthorizationStatus = MeetingCalendar.authorizationStatus
+    @State private var isRequestingCalendarAccess = false
+
+    private static let refreshInterval: TimeInterval = 180
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Hoy").font(.largeTitle).bold()
 
-                if !todayMeetings.isEmpty {
+                if let message = CalendarAccessPolicy.message(for: calendarStatus) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(message).foregroundStyle(.secondary)
+                        if let actionLabel = CalendarAccessPolicy.actionLabel(for: calendarStatus) {
+                            Button(actionLabel) { handleCalendarAccessAction() }
+                                .disabled(isRequestingCalendarAccess)
+                        }
+                    }
+                }
+
+                if CalendarAccessPolicy.hasFullAccess(calendarStatus), !todayMeetings.isEmpty {
                     Text("Agenda del día").font(.headline).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(todayMeetings.enumerated()), id: \.offset) { _, meeting in
+                            let matched = MeetingRecordingLinker.match(meeting: meeting, in: recentRecords)
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 4) {
                                         Text(meeting.title)
                                         if hasVideoLink(meeting) {
                                             Image(systemName: "video.fill").foregroundStyle(.blue).font(.caption)
+                                        }
+                                        if matched != nil {
+                                            Label("Grabada", systemImage: "waveform.circle.fill")
+                                                .font(.caption2)
+                                                .foregroundStyle(BrandColor.sello)
                                         }
                                     }
                                     .font(.body)
@@ -99,13 +134,18 @@ struct TodaySectionView: View {
                                     }
                                 }
                                 .font(.caption)
+                                .buttonStyle(.bordered)
                             }
                             .padding(8)
                             .background(Color(.controlBackgroundColor))
                             .cornerRadius(6)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedAgendaItem = AgendaMeetingSelection(meeting: meeting, matchedMeetingID: matched?.id)
+                            }
                         }
                     }
-                } else {
+                } else if CalendarAccessPolicy.shouldShowEmptyAgenda(status: calendarStatus, meetingsCount: todayMeetings.count) {
                     Text("Sin reuniones en el calendario hoy.").foregroundStyle(.secondary)
                 }
 
@@ -152,7 +192,57 @@ struct TodaySectionView: View {
         }
         .navigationTitle("Hoy")
         .task {
-            loadTodayMeetings()
+            refresh()
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(Self.refreshInterval * 1_000_000_000))
+                refresh()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refresh()
+        }
+        .sheet(item: $selectedAgendaItem) { item in
+            NavigationStack {
+                Group {
+                    if let matchedMeetingID = item.matchedMeetingID {
+                        MeetingDetailView(meetingID: matchedMeetingID)
+                    } else {
+                        NotRecordedMeetingDetailView(meeting: item.meeting, controller: controller)
+                    }
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cerrar") { selectedAgendaItem = nil }
+                    }
+                }
+            }
+            .frame(minWidth: 760, minHeight: 560)
+        }
+    }
+
+    private func refresh() {
+        calendarStatus = MeetingCalendar.authorizationStatus
+        loadTodayMeetings()
+        recentRecords = (try? MeetingStore().recentMeetings(limit: 200)) ?? []
+    }
+
+    private func handleCalendarAccessAction() {
+        switch CalendarAccessPolicy.action(for: calendarStatus) {
+        case .none:
+            break
+        case .request:
+            isRequestingCalendarAccess = true
+            Task {
+                _ = try? await MeetingCalendar.shared.requestAccess()
+                isRequestingCalendarAccess = false
+                refresh()
+            }
+        case .openSystemSettings:
+            if let url = URL(string: CalendarAccessPolicy.systemSettingsURL) {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
@@ -170,17 +260,95 @@ struct TodaySectionView: View {
     }
 
     private func prepareBrief(for meeting: CalendarMeeting) async {
+        await MeetingBriefAction.copyToClipboard(attendees: meeting.attendees, title: meeting.title)
+    }
+}
+
+enum MeetingBriefAction {
+    static func copyToClipboard(attendees: [String], title: String) async {
         do {
-            let answer = try await MeetingBrief.generate(
-                attendees: meeting.attendees,
-                title: meeting.title
-            )
+            let answer = try await MeetingBrief.generate(attendees: attendees, title: title)
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(answer.text, forType: .string)
         } catch {
             NSLog("Error preparando brief: \(error)")
         }
+    }
+}
+
+struct NotRecordedMeetingDetailView: View {
+    let meeting: CalendarMeeting
+    @ObservedObject var controller: RecordingController
+    @State private var preparingBrief = false
+
+    private var joinURL: URL? {
+        meeting.videoLink.flatMap {
+            MeetingJoinLink.resolve(videoLink: $0, nativeAppInstalled: MeetingJoinLink.isNativeAppAvailable(forVideoLink: $0))
+        }
+    }
+
+    private var canOfferJoin: Bool {
+        joinURL != nil && meeting.end > Date() && !meeting.promptExcluded
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(meeting.title).font(.title2).bold()
+
+                HStack(spacing: 2) {
+                    Text(meeting.start.formatted(date: .complete, time: .shortened))
+                    Text("–")
+                    Text(meeting.end.formatted(date: .omitted, time: .shortened))
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+                if let platform = MeetingPromptDecider.platformLabel(videoLink: meeting.videoLink) {
+                    Label(platform, systemImage: "video")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !meeting.attendees.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Asistentes").font(.headline)
+                        Text(meeting.attendees.joined(separator: ", "))
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Divider()
+
+                Label("No se grabó esta reunión", systemImage: "waveform.slash")
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button(preparingBrief ? "Preparando…" : "Brief") {
+                        preparingBrief = true
+                        Task {
+                            await MeetingBriefAction.copyToClipboard(attendees: meeting.attendees, title: meeting.title)
+                            preparingBrief = false
+                        }
+                    }
+                    .disabled(preparingBrief)
+                    if canOfferJoin, let joinURL {
+                        Button("Unirse y tomar notas") {
+                            NSWorkspace.shared.open(joinURL)
+                            controller.start()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(BrandColor.sello)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .navigationTitle(meeting.title)
     }
 }
 
@@ -339,159 +507,37 @@ struct MeetingDetailView: View {
     @State private var newSpeakerName = ""
     @State private var showRegenerateAlert = false
     @State private var visualCaptureCount = 0
+    @Environment(\.openWindow) private var openWindow
+
+    private var summaryMarkdown: String { MeetingNoteMarkdown.summaryOnly(noteMarkdown) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if let record {
-                    HStack {
-                        Text(record.title).font(.title2).bold()
-                        Spacer()
-                        Menu {
-                            Button("Copiar como Markdown") {
-                                copyAsMarkdown()
+        Group {
+            if let record {
+                VStack(alignment: .leading, spacing: 12) {
+                    header(record: record)
+                    GeometryReader { proxy in
+                        if MeetingDetailLayout.isWide(width: proxy.size.width) {
+                            HStack(alignment: .top, spacing: 16) {
+                                summaryPane().frame(maxWidth: .infinity, maxHeight: .infinity)
+                                Divider()
+                                transcriptPane().frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
-                            Button("Copiar con formato") {
-                                copyAsRich()
-                            }
-                            Button("Exportar a PDF") {
-                                exportPDF()
-                            }
-                            Divider()
-                            Button("Enviar a Slack") {
-                                sendToSlack()
-                            }
-                            Button("Crear en Notion") {
-                                sendToNotion()
-                            }
-                        } label: {
-                            Label("Compartir", systemImage: "square.and.arrow.up")
-                        }
-                        Button("Abrir en Obsidian") {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: record.notePath))
-                        }
-                        Button("Mostrar en Finder") {
-                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: record.notePath)])
-                        }
-                    }
-                    Text(record.date.formatted(date: .complete, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if !pauses.isEmpty {
-                        PausesSummaryView(recordedSeconds: record.durationSeconds, pauses: pauses)
-                    }
-
-                    Text("Nota").font(.headline)
-                    if let attributed = try? AttributedString(
-                        markdown: noteMarkdown,
-                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                    ) {
-                        Text(attributed).textSelection(.enabled)
-                    } else {
-                        Text(noteMarkdown).textSelection(.enabled)
-                    }
-
-                    Divider()
-                    OwnNotesSectionView(meetingID: meetingID)
-
-                    if visualCaptureCount > 0 {
-                        Divider()
-                        HStack {
-                            Label("Contexto visual: \(visualCaptureCount) captura(s)", systemImage: "eye")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Borrar capturas") { deleteVisualCaptures() }
-                                .font(.caption)
-                        }
-                    }
-
-                    if !segments.isEmpty {
-                        Divider()
-                        ParticipantsPanelView(meetingID: meetingID) {
-                            segments = (try? MeetingStore().segments(meetingID: meetingID)) ?? segments
-                        }
-
-                        Divider()
-                        HStack {
-                            Text("Transcript").font(.headline)
-                            Spacer()
-                            Button("Regenerar nota") {
-                                showRegenerateAlert = true
-                            }
-                            .font(.caption)
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-                                if editingSegmentIndex == index {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        TextField("Texto", text: $editingSegmentText)
-                                            .textFieldStyle(.roundedBorder)
-                                        HStack {
-                                            Button("Guardar") {
-                                                saveSegmentEdit(index: index)
-                                            }
-                                            Button("Cancelar") {
-                                                editingSegmentIndex = nil
-                                            }
-                                        }
-                                        .font(.caption)
-                                    }
-                                } else {
-                                    HStack(spacing: 8) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("[\(Self.timestamp(segment.start))] \(segment.speaker):")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            Text(segment.text)
-                                                .textSelection(.enabled)
-                                        }
-                                        Spacer()
-                                        Button("Editar") {
-                                            editingSegmentIndex = index
-                                            editingSegmentText = segment.text
-                                        }
-                                        .font(.caption)
-                                        Button("Renombrar") {
-                                            renamingSpeaker = segment.speaker
-                                            newSpeakerName = segment.speaker
-                                        }
-                                        .font(.caption)
-                                    }
-                                    .padding(8)
-                                    .background(Color(.controlBackgroundColor))
-                                    .cornerRadius(4)
-                                }
-                            }
-                        }
-
-                        if let speaker = renamingSpeaker {
-                            Divider()
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Renombrar '\(speaker)' a:").font(.caption)
-                                TextField("Nuevo nombre", text: $newSpeakerName)
-                                    .textFieldStyle(.roundedBorder)
-                                HStack {
-                                    Button("Renombrar") {
-                                        saveSpeakerRename(oldSpeaker: speaker)
-                                    }
-                                    Button("Cancelar") {
-                                        renamingSpeaker = nil
-                                    }
-                                }
-                                .font(.caption)
+                        } else {
+                            VStack(alignment: .leading, spacing: 16) {
+                                summaryPane().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                                Divider()
+                                transcriptPane().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                             }
                         }
                     }
-                } else if let errorMessage {
-                    Text(errorMessage).foregroundStyle(.red)
-                } else {
-                    ProgressView()
                 }
+                .padding()
+            } else if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red).padding()
+            } else {
+                ProgressView().padding()
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle(record?.title ?? "Reunión")
         .alert("Regenerar nota", isPresented: $showRegenerateAlert) {
@@ -503,6 +549,199 @@ struct MeetingDetailView: View {
             Text("Esto generará una nueva nota con los cambios realizados en el transcript.")
         }
         .task(id: meetingID) { load() }
+    }
+
+    @ViewBuilder
+    private func header(record: MeetingRecord) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(record.title).font(.title2).bold()
+                Spacer()
+                Menu {
+                    Button("Copiar como Markdown") {
+                        copyAsMarkdown()
+                    }
+                    Button("Copiar con formato") {
+                        copyAsRich()
+                    }
+                    Button("Exportar a PDF") {
+                        exportPDF()
+                    }
+                    Divider()
+                    Button("Enviar a Slack") {
+                        sendToSlack()
+                    }
+                    Button("Crear en Notion") {
+                        sendToNotion()
+                    }
+                } label: {
+                    Label("Compartir", systemImage: "square.and.arrow.up")
+                }
+                Button("Abrir en Obsidian") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: record.notePath))
+                }
+                Button("Mostrar en Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: record.notePath)])
+                }
+            }
+            Text(record.date.formatted(date: .complete, time: .shortened))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !pauses.isEmpty {
+                PausesSummaryView(recordedSeconds: record.durationSeconds, pauses: pauses)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func summaryPane() -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Resumen").font(.headline).foregroundStyle(.secondary)
+                if let attributed = try? AttributedString(
+                    markdown: summaryMarkdown,
+                    options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                ) {
+                    Text(attributed).textSelection(.enabled)
+                } else {
+                    Text(summaryMarkdown).textSelection(.enabled)
+                }
+
+                Divider()
+                OwnNotesSectionView(meetingID: meetingID)
+
+                if visualCaptureCount > 0 {
+                    Divider()
+                    HStack {
+                        Label("Contexto visual: \(visualCaptureCount) captura(s)", systemImage: "eye")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Borrar capturas") { deleteVisualCaptures() }
+                            .font(.caption)
+                    }
+                }
+
+                if !segments.isEmpty {
+                    Divider()
+                    ParticipantsPanelView(meetingID: meetingID) {
+                        segments = (try? MeetingStore().segments(meetingID: meetingID)) ?? segments
+                    }
+                }
+            }
+            .padding(.trailing, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func transcriptPane() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Transcript").font(.headline)
+                Spacer()
+                if !segments.isEmpty {
+                    Button("Abrir transcripción en ventana") {
+                        openWindow(id: "aria-transcript", value: meetingID)
+                    }
+                    .font(.caption)
+                    Button("Regenerar nota") {
+                        showRegenerateAlert = true
+                    }
+                    .font(.caption)
+                }
+            }
+            if segments.isEmpty {
+                Text("Sin transcripción (reunión no grabada o sin voz detectada).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(
+                            Array(TranscriptFormatter.timeline(segments: segments, pauses: pauses).enumerated()),
+                            id: \.offset
+                        ) { _, item in
+                            switch item {
+                            case .segment(let index, let segment):
+                                segmentRow(index: index, segment: segment)
+                            case .pause(let pause):
+                                Text("⏸ \(PauseLogic.rangeLabel(for: pause))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 2)
+                            }
+                        }
+                        if let speaker = renamingSpeaker {
+                            renameSpeakerPanel(speaker: speaker)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func segmentRow(index: Int, segment: TranscriptSegment) -> some View {
+        if editingSegmentIndex == index {
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Texto", text: $editingSegmentText)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Guardar") {
+                        saveSegmentEdit(index: index)
+                    }
+                    Button("Cancelar") {
+                        editingSegmentIndex = nil
+                    }
+                }
+                .font(.caption)
+            }
+        } else {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("[\(Self.timestamp(segment.start))] \(segment.speaker):")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(segment.text)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Button("Editar") {
+                    editingSegmentIndex = index
+                    editingSegmentText = segment.text
+                }
+                .font(.caption)
+                Button("Renombrar") {
+                    renamingSpeaker = segment.speaker
+                    newSpeakerName = segment.speaker
+                }
+                .font(.caption)
+            }
+            .padding(8)
+            .background(Color(.controlBackgroundColor))
+            .cornerRadius(4)
+        }
+    }
+
+    @ViewBuilder
+    private func renameSpeakerPanel(speaker: String) -> some View {
+        Divider()
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Renombrar '\(speaker)' a:").font(.caption)
+            TextField("Nuevo nombre", text: $newSpeakerName)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button("Renombrar") {
+                    saveSpeakerRename(oldSpeaker: speaker)
+                }
+                Button("Cancelar") {
+                    renamingSpeaker = nil
+                }
+            }
+            .font(.caption)
+        }
     }
 
     private func load() {
@@ -732,9 +971,9 @@ struct ChatSectionView: View {
 
 struct SettingsSectionView: View {
     @State private var config = AriaConfig.load()
-    @State private var micStatus = "—"
-    @State private var screenStatus = "—"
-    @State private var calendarStatus = "—"
+    @State private var micAuthStatus: AVAuthorizationStatus = Permissions.microphoneStatus()
+    @State private var screenGranted = Permissions.screenRecordingGranted()
+    @State private var calendarAuthStatus: EKAuthorizationStatus = MeetingCalendar.authorizationStatus
     @State private var savedMessage: String?
     @State private var slackWebhookInput = ""
     @State private var slackSavedMessage: String?
@@ -765,9 +1004,42 @@ struct SettingsSectionView: View {
                 }
             }
             Section("Permisos") {
-                permissionRow("Micrófono", status: micStatus, settingsURL: Permissions.micSettingsURL)
-                permissionRow("Grabación de pantalla", status: screenStatus, settingsURL: Permissions.screenSettingsURL)
-                permissionRow("Calendario", status: calendarStatus, settingsURL: nil)
+                permissionRow(
+                    "Calendario",
+                    statusLabel: CalendarAccessPolicy.settingsLabel(for: calendarAuthStatus),
+                    actionLabel: CalendarAccessPolicy.actionLabel(for: calendarAuthStatus),
+                    action: {
+                        performAction(
+                            CalendarAccessPolicy.action(for: calendarAuthStatus),
+                            request: requestCalendarAccess,
+                            settingsURL: CalendarAccessPolicy.systemSettingsURL
+                        )
+                    }
+                )
+                permissionRow(
+                    "Micrófono",
+                    statusLabel: MicrophonePermissionPolicy.statusLabel(micAuthStatus),
+                    actionLabel: MicrophonePermissionPolicy.actionLabel(micAuthStatus),
+                    action: {
+                        performAction(
+                            MicrophonePermissionPolicy.action(micAuthStatus),
+                            request: requestMicAccess,
+                            settingsURL: Permissions.micSettingsURL
+                        )
+                    }
+                )
+                permissionRow(
+                    "Grabación de pantalla",
+                    statusLabel: ScreenRecordingPermissionPolicy.statusLabel(granted: screenGranted),
+                    actionLabel: ScreenRecordingPermissionPolicy.actionLabel(granted: screenGranted),
+                    action: {
+                        performAction(
+                            ScreenRecordingPermissionPolicy.action(granted: screenGranted),
+                            request: requestScreenAccess,
+                            settingsURL: Permissions.screenSettingsURL
+                        )
+                    }
+                )
             }
             Section("Calendario Google / Outlook") {
                 Text("""
@@ -935,25 +1207,53 @@ struct SettingsSectionView: View {
         reloadCalendarListings()
     }
 
-    private func permissionRow(_ name: String, status: String, settingsURL: String?) -> some View {
+    private func permissionRow(_ name: String, statusLabel: String, actionLabel: String?, action: @escaping () -> Void) -> some View {
         HStack {
             Text(name)
             Spacer()
-            Text(status).foregroundStyle(.secondary)
-            if let settingsURL, let url = URL(string: settingsURL) {
-                Button("Ajustes del sistema…") { NSWorkspace.shared.open(url) }
+            Text(statusLabel).foregroundStyle(.secondary)
+            if let actionLabel {
+                Button(actionLabel, action: action)
             }
         }
     }
 
-    private func refreshPermissions() {
-        switch Permissions.microphoneStatus() {
-        case .authorized: micStatus = "Concedido"
-        case .denied, .restricted: micStatus = "Denegado"
-        default: micStatus = "Sin solicitar"
+    private func performAction(_ action: PermissionRowAction, request: @escaping () -> Void, settingsURL: String) {
+        switch action {
+        case .none:
+            break
+        case .request:
+            request()
+        case .openSystemSettings:
+            if let url = URL(string: settingsURL) {
+                NSWorkspace.shared.open(url)
+            }
         }
-        screenStatus = Permissions.screenRecordingGranted() ? "Concedido" : "Denegado"
-        calendarStatus = MeetingCalendar.isAuthorized ? "Concedido" : MeetingCalendar.statusDescription
+    }
+
+    private func requestCalendarAccess() {
+        Task {
+            _ = try? await MeetingCalendar.shared.requestAccess()
+            refreshPermissions()
+        }
+    }
+
+    private func requestMicAccess() {
+        Task {
+            _ = await Permissions.ensureMicrophone()
+            refreshPermissions()
+        }
+    }
+
+    private func requestScreenAccess() {
+        _ = Permissions.ensureScreenRecording()
+        refreshPermissions()
+    }
+
+    private func refreshPermissions() {
+        micAuthStatus = Permissions.microphoneStatus()
+        screenGranted = Permissions.screenRecordingGranted()
+        calendarAuthStatus = MeetingCalendar.authorizationStatus
     }
 
     private func save() {

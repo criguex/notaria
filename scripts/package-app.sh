@@ -11,6 +11,7 @@ VERSION="0.9.0"
 BUILD_NUMBER="1"
 EXECUTABLE="aria-capture"
 ICON_SRC="$HOME/Projects/notaria-brand/out/AppIcon.icns"
+SIGNING_IDENTITY_NAME="NotarIA Local Signing"
 
 echo "[package] Build release (toolchain de scripts/build.sh)..."
 ./scripts/build.sh -c release
@@ -104,13 +105,31 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "[package] Firmando ad-hoc (codesign --force --deep -s -)..."
-codesign --force --deep -s - --entitlements scripts/entitlements.plist "$APP_DIR"
+# Firma ad-hoc (-s -) deriva el Designated Requirement del hash del binario,
+# que cambia en cada build y hace que TCC (Calendario/Micrófono/Pantalla)
+# trate cada reinstalación como una app nueva, perdiendo los permisos. Si
+# existe la identidad local estable (scripts/setup-signing-identity.sh), se
+# usa esa en su lugar: su DR queda anclado al certificado, no al binario.
+if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$SIGNING_IDENTITY_NAME\""; then
+    SIGN_IDENTITY="$SIGNING_IDENTITY_NAME"
+    echo "[package] Firmando con identidad local estable \"$SIGN_IDENTITY\" (codesign --force --deep -s \"$SIGN_IDENTITY\")..."
+else
+    SIGN_IDENTITY="-"
+    echo "[aviso] No existe la identidad \"$SIGNING_IDENTITY_NAME\" (corre scripts/setup-signing-identity.sh)." >&2
+    echo "[aviso] Firmando ad-hoc (codesign --force --deep -s -): el DR cambiará en cada build y TCC" >&2
+    echo "        volverá a pedir Calendario/Micrófono/Grabación de pantalla tras cada reinstalación." >&2
+fi
+codesign --force --deep -s "$SIGN_IDENTITY" --entitlements scripts/entitlements.plist "$APP_DIR"
 
 echo "[package] Verificando firma..."
 codesign --verify --deep --strict "$APP_DIR"
 codesign -dv "$APP_DIR" 2>&1 | sed 's/^/[codesign] /'
+codesign -d -r- "$APP_DIR" 2>&1 | sed 's/^/[codesign] /'
 
 echo "[ok] Listo: $APP_DIR"
-echo "      Firma ad-hoc, solo para uso local en este Mac."
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "      Firma ad-hoc, solo para uso local en este Mac (DR inestable entre builds)."
+else
+    echo "      Firma con \"$SIGN_IDENTITY\", solo para uso local en este Mac (DR estable entre builds)."
+fi
 echo "      Para distribución pública haría falta Developer ID + notarización (no incluido aquí)."

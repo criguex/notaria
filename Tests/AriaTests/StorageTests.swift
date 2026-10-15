@@ -51,6 +51,36 @@ final class StorageTests: XCTestCase {
         XCTAssertEqual(try store.purge(olderThanDays: 0), 0)
     }
 
+    func testSaveMeetingPersistsEventIdentifierAsExternalID() throws {
+        let store = try MeetingStore(databaseURL: tempDir.appendingPathComponent("eventid.db"))
+        let meetingID = try store.saveMeeting(
+            date: Date(), title: "Reunión calendarizada", durationSeconds: 60,
+            notePath: "/tmp/a.md", wavPath: nil, segments: [], quickNotes: [],
+            eventIdentifier: "ek-event-123"
+        )
+        let saved = try store.recentMeetings().first { $0.id == meetingID }
+        XCTAssertEqual(saved?.externalID, "ek-event-123")
+    }
+
+    func testSaveMeetingFallsBackToNilExternalIDOnDuplicate() throws {
+        let store = try MeetingStore(databaseURL: tempDir.appendingPathComponent("eventid-dup.db"))
+        let firstID = try store.saveMeeting(
+            date: Date(timeIntervalSinceNow: -60), title: "Primera parte", durationSeconds: 60,
+            notePath: "/tmp/b1.md", wavPath: nil, segments: [], quickNotes: [],
+            eventIdentifier: "ek-event-dup"
+        )
+        let secondID = try store.saveMeeting(
+            date: Date(), title: "Segunda parte", durationSeconds: 60,
+            notePath: "/tmp/b2.md", wavPath: nil, segments: [], quickNotes: [],
+            eventIdentifier: "ek-event-dup"
+        )
+        XCTAssertNotEqual(firstID, secondID)
+        let records = try store.recentMeetings()
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.first { $0.id == firstID }?.externalID, "ek-event-dup")
+        XCTAssertNil(records.first { $0.id == secondID }?.externalID)
+    }
+
     func testObsidianWriterFrontmatterAndCollision() throws {
         let writer = ObsidianWriter(directory: tempDir.appendingPathComponent("Reuniones", isDirectory: true))
         let note = MeetingNote(
