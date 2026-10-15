@@ -52,6 +52,9 @@ struct WavTranscription {
     let segments: [TranscriptSegment]
     let durationSeconds: Double
     let speakers: [String]
+    /// Centroide de embedding por etiqueta "Hablante N" (vacío si la separación no está activa
+    /// o no logró distinguir más de una voz dentro del canal del sistema).
+    var speakerEmbeddings: [String: SpeakerEmbedding] = [:]
 }
 
 func transcribeWav(path: String) async throws -> WavTranscription {
@@ -97,19 +100,41 @@ func transcribeWav(path: String) async throws -> WavTranscription {
         print("[whisper] Idioma: \(language)")
     }
 
+    let separationEnabled = AriaConfig.load().speakerSeparationEnabled
     var perChannel: [[TranscriptSegment]] = []
+    var speakerEmbeddings: [String: SpeakerEmbedding] = [:]
+    var resultSpeakers: [String] = []
     for (index, speaker) in speakers.enumerated() {
         let samples = Array(UnsafeBufferPointer(start: channels[index], count: frameCount))
         let output = try chunked.transcribe(samples: samples, language: language, speaker: speaker)
         let stats = output.stats
         print(String(format: "[whisper] Canal %@: %.1f s de voz de %.1f s · %d ventana(s) · %d segmento(s)",
                      speaker, stats.voicedSeconds, stats.totalSeconds, stats.windows, output.segments.count))
-        perChannel.append(output.segments)
+
+        var channelSegments = output.segments
+        var channelSpeakers = [speaker]
+        if speaker != "Yo", separationEnabled {
+            let diarized = SpeakerDiarizer.relabel(
+                segments: channelSegments,
+                originalSpeaker: speaker,
+                channelSamples: samples,
+                sampleRate: 16_000
+            )
+            if diarized.speakerCount > 1 {
+                channelSegments = diarized.segments
+                channelSpeakers = SpeakerNaming.orderedSpeakerLabels(in: channelSegments)
+                speakerEmbeddings.merge(diarized.embeddings) { _, new in new }
+                print("[hablantes] Canal \(speaker): \(diarized.speakerCount) voz(ces) separadas (\(channelSpeakers.joined(separator: ", ")))")
+            }
+        }
+        perChannel.append(channelSegments)
+        resultSpeakers.append(contentsOf: channelSpeakers)
     }
     return WavTranscription(
         segments: ChunkedTranscriber.merged(perChannel),
         durationSeconds: Double(frameCount) / format.sampleRate,
-        speakers: speakers
+        speakers: resultSpeakers,
+        speakerEmbeddings: speakerEmbeddings
     )
 }
 
@@ -219,6 +244,13 @@ case "note":
 case "menubar":
     print("[menubar] Lanzando Aria en la barra de menú (⌃C aquí para cerrar)…")
     AriaMenuBarApp.main()
+
+case "preview-toast":
+    let kind = arguments.dropFirst().first ?? "prompt"
+    PreviewToast.run(kind: kind)
+
+case "preview-menu":
+    PreviewMenu.run()
 
 case "open":
     if isMenubarRunning() {
@@ -371,16 +403,22 @@ case "enhance":
             exit(1)
         }
         let result = try await transcribeWav(path: path)
-        var segments = speakerMap.isEmpty ? result.segments : SpeakerMap.apply(speakerMap, to: result.segments)
-        let speakers = speakerMap.isEmpty ? result.speakers : SpeakerMap.apply(speakerMap, to: result.speakers)
-        if !speakerMap.isEmpty {
-            print("[hablantes] Mapeo aplicado: \(speakerMap.map { "\($0.key)→\($0.value)" }.sorted().joined(separator: ", "))")
-        }
         let rawNotes = NotesStore().rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
         let recordingStart = recordingEnd.addingTimeInterval(-result.durationSeconds)
         let calendarMeeting = MeetingCalendar.shared.meeting(overlapping: recordingStart, to: recordingEnd)
         if let meeting = calendarMeeting {
             print("[calendario] Reunión detectada: \(meeting.title)\(meeting.attendees.isEmpty ? "" : " · \(meeting.attendees.joined(separator: ", "))")")
+        }
+        let resolution = SpeakerResolutionPipeline.resolve(
+            segments: result.segments,
+            calendarMeeting: calendarMeeting,
+            speakerEmbeddings: result.speakerEmbeddings,
+            voiceMemoryEnabled: AriaConfig.load().voiceMemoryEnabled
+        )
+        var segments = speakerMap.isEmpty ? resolution.segments : SpeakerMap.apply(speakerMap, to: resolution.segments)
+        let speakerEmbeddingsToSave = speakerMap.isEmpty ? resolution.embeddings : [:]
+        if !speakerMap.isEmpty {
+            print("[hablantes] Mapeo aplicado: \(speakerMap.map { "\($0.key)→\($0.value)" }.sorted().joined(separator: ", "))")
         }
         let wantPolish = polishFlag || AriaConfig.load().transcriptPolish
         if wantPolish, offline {
@@ -399,7 +437,8 @@ case "enhance":
             }
         }
         let transcript = TranscriptFormatter.render(segments)
-        let participants = CalendarMeeting.participants(meeting: calendarMeeting, fallback: speakers)
+        let speakerFallback = SpeakerNaming.orderedSpeakerLabels(in: segments).map(SpeakerNaming.cleanLabel)
+        let participants = CalendarMeeting.participants(meeting: calendarMeeting, fallback: speakerFallback)
 
         if offline {
             print("[enhance] Modo offline: transcript + notas crudas, sin IA.")
@@ -421,7 +460,8 @@ case "enhance":
             )
             let url = try ObsidianWriter().write(note)
             do {
-                try MeetingStore().saveMeeting(
+                let store = try MeetingStore()
+                let meetingID = try store.saveMeeting(
                     date: now,
                     title: note.title,
                     durationSeconds: result.durationSeconds,
@@ -430,6 +470,7 @@ case "enhance":
                     segments: segments,
                     quickNotes: NotesStore().all()
                 )
+                try store.saveSpeakerEmbeddings(speakerEmbeddingsToSave, meetingID: meetingID)
             } catch {
                 print("[aviso] Historial no guardado: \(error.localizedDescription)")
             }
@@ -464,7 +505,7 @@ case "enhance":
         let url = try ObsidianWriter().write(note)
         do {
             let store = try MeetingStore()
-            try store.saveMeeting(
+            let meetingID = try store.saveMeeting(
                 date: now,
                 title: note.title,
                 durationSeconds: result.durationSeconds,
@@ -473,6 +514,7 @@ case "enhance":
                 segments: segments,
                 quickNotes: NotesStore().all()
             )
+            try store.saveSpeakerEmbeddings(speakerEmbeddingsToSave, meetingID: meetingID)
         } catch {
             print("[aviso] Historial no guardado: \(error.localizedDescription)")
         }
@@ -865,6 +907,25 @@ case "model":
             exit(1)
         }
     }
+    if modelArgs.first == "speakers" {
+        var config = AriaConfig.load()
+        if config.speakerSeparationEnabled {
+            print("[hablantes] Separación de voces ya activa.")
+        } else {
+            config.speakerSeparationEnabled = true
+            do {
+                try config.save()
+                print("[hablantes] Separación de voces activada.")
+            } catch {
+                print("[error] No se pudo guardar la configuración: \(error.localizedDescription)")
+                exit(1)
+            }
+        }
+        print("[hablantes] Esta versión usa un embedder espectral local (coeficientes de reflexión LPC, sin red neuronal) — no hay modelo que descargar todavía.")
+        print("[hablantes] Si en el futuro se integra un backend neuronal (ver docs/ADR-hablantes.md), se descargará a \(WhisperModelStore.modelsDirectory.path) y si falta se cae a este modo espectral.")
+        print("[hablantes] 'Ellos'/'Otros' pasa a 'Hablante 1/2/3…' cuando el clustering distingue más de una voz en el canal del sistema; si no logra distinguirlas, sigue igual que hoy.")
+        exit(0)
+    }
     do {
         let modelURL = try await WhisperModelStore.ensureModel()
         print("[whisper] Modelo listo: \(modelURL.path)")
@@ -949,6 +1010,6 @@ case "wav":
     }
 
 default:
-    print("Uso: aria-capture [--version | wav [segundos] | system | mic | check | model | transcribe [archivo.wav] | note [texto] | claude <texto> | enhance [--offline] [--polish] [--speakers <mapa>] [--template <nombre>] [archivo.wav] | menubar | open | history | calls | calendar | chat [--meeting <id>] [--last <n>] <pregunta> | recipe [<nombre>] [--meeting <id>] [--last <n>] | brief [--with <nombres>] [--title <titulo>] | search <palabras> | template | ai test | mcp | config [clave valor] | import <ruta> [--source nombre] | import-granola <directorio-json>]")
+    print("Uso: aria-capture [--version | wav [segundos] | system | mic | check | model [vad|speakers] | transcribe [archivo.wav] | note [texto] | claude <texto> | enhance [--offline] [--polish] [--speakers <mapa>] [--template <nombre>] [archivo.wav] | menubar | open | history | calls | calendar | chat [--meeting <id>] [--last <n>] <pregunta> | recipe [<nombre>] [--meeting <id>] [--last <n>] | brief [--with <nombres>] [--title <titulo>] | search <palabras> | template | ai test | mcp | config [clave valor] | import <ruta> [--source nombre] | import-granola <directorio-json>]")
     exit(2)
 }

@@ -110,6 +110,40 @@ final class LiveMeetingLogicTests: XCTestCase {
         )
     }
 
+    func testTimeLabelFormatsHourMinuteInGivenTimeZone() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000) // 2027-01-15T08:00:00Z
+        XCTAssertEqual(MeetingPromptDecider.timeLabel(for: date, timeZone: TimeZone(identifier: "UTC")!), "08:00")
+        XCTAssertEqual(
+            MeetingPromptDecider.timeLabel(for: date, timeZone: TimeZone(identifier: "America/Bogota")!),
+            "03:00"
+        )
+    }
+
+    func testPlatformLabelRecognizesKnownDomainsAndRejectsUnknownOrMissing() {
+        XCTAssertEqual(MeetingPromptDecider.platformLabel(videoLink: "https://meet.google.com/abc-defg-hij"), "Meet")
+        XCTAssertEqual(MeetingPromptDecider.platformLabel(videoLink: "https://zoom.us/j/123456"), "Zoom")
+        XCTAssertNil(MeetingPromptDecider.platformLabel(videoLink: "https://example.com/not-a-meeting"))
+        XCTAssertNil(MeetingPromptDecider.platformLabel(videoLink: nil))
+        XCTAssertNil(MeetingPromptDecider.platformLabel(videoLink: ""))
+    }
+
+    func testPromptSubtitleCombinesTimeAndPlatformOrFallsBackToJustTime() {
+        var withLink = meeting("Sync Q3")
+        withLink.videoLink = "https://meet.google.com/abc-defg-hij"
+        XCTAssertEqual(
+            MeetingPromptDecider.promptSubtitle(meetingNow: withLink, timeZone: TimeZone(identifier: "UTC")!),
+            "08:00 · Meet"
+        )
+
+        let withoutLink = meeting("Sync Q3")
+        XCTAssertEqual(
+            MeetingPromptDecider.promptSubtitle(meetingNow: withoutLink, timeZone: TimeZone(identifier: "UTC")!),
+            "08:00"
+        )
+
+        XCTAssertNil(MeetingPromptDecider.promptSubtitle(meetingNow: nil))
+    }
+
     // MARK: - PillPosition
 
     func testPillPositionDecodeFallsBackToDefaultOnInvalidInput() {

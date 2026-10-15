@@ -18,7 +18,7 @@ enum WhisperError: LocalizedError {
     }
 }
 
-struct TranscriptSegment {
+struct TranscriptSegment: Equatable {
     let start: TimeInterval
     let end: TimeInterval
     let text: String

@@ -11,6 +11,7 @@ struct AriaConfig: Codable {
     var language = "es"
     var transcriptPolish = false
     var showUpcoming = true
+    var showMenuBarTitle = true
     var ignoreNoParticipants = false
     var calendarIgnore = ""
     var aiProvider = AIProviderKind.auto
@@ -20,6 +21,9 @@ struct AriaConfig: Codable {
     var visualContextEnabled = false
     var visualContextExcludedApps = VisualAppExclusionPolicy.defaultExcludedBundleIDs.joined(separator: ",")
     var visualContextChangeThreshold = 0.02
+    var speakerSeparationEnabled = false
+    var voiceMemoryEnabled = false
+    var participantsAccessibilityEnabled = false
 
     init() {}
 
@@ -35,6 +39,7 @@ struct AriaConfig: Codable {
         language = try container.decodeIfPresent(String.self, forKey: .language) ?? language
         transcriptPolish = try container.decodeIfPresent(Bool.self, forKey: .transcriptPolish) ?? transcriptPolish
         showUpcoming = try container.decodeIfPresent(Bool.self, forKey: .showUpcoming) ?? showUpcoming
+        showMenuBarTitle = try container.decodeIfPresent(Bool.self, forKey: .showMenuBarTitle) ?? showMenuBarTitle
         ignoreNoParticipants = try container.decodeIfPresent(Bool.self, forKey: .ignoreNoParticipants) ?? ignoreNoParticipants
         calendarIgnore = try container.decodeIfPresent(String.self, forKey: .calendarIgnore) ?? calendarIgnore
         aiProvider = try container.decodeIfPresent(AIProviderKind.self, forKey: .aiProvider) ?? aiProvider
@@ -44,6 +49,9 @@ struct AriaConfig: Codable {
         visualContextEnabled = try container.decodeIfPresent(Bool.self, forKey: .visualContextEnabled) ?? visualContextEnabled
         visualContextExcludedApps = try container.decodeIfPresent(String.self, forKey: .visualContextExcludedApps) ?? visualContextExcludedApps
         visualContextChangeThreshold = try container.decodeIfPresent(Double.self, forKey: .visualContextChangeThreshold) ?? visualContextChangeThreshold
+        speakerSeparationEnabled = try container.decodeIfPresent(Bool.self, forKey: .speakerSeparationEnabled) ?? speakerSeparationEnabled
+        voiceMemoryEnabled = try container.decodeIfPresent(Bool.self, forKey: .voiceMemoryEnabled) ?? voiceMemoryEnabled
+        participantsAccessibilityEnabled = try container.decodeIfPresent(Bool.self, forKey: .participantsAccessibilityEnabled) ?? participantsAccessibilityEnabled
     }
 
     var ignoredCalendars: [String] {
@@ -128,6 +136,7 @@ struct AriaConfig: Codable {
         language         = \(language)\(language == "auto" ? " (whisper detecta; la nota sale en el idioma de la reunión)" : "")
         transcriptPolish = \(transcriptPolish)\(transcriptPolish ? " (Claude corrige el transcript antes del enhance)" : "")
         showUpcoming     = \(showUpcoming) (próxima reunión en menú y barra)
+        showMenuBarTitle = \(showMenuBarTitle) (título + cuenta atrás junto al glifo de la barra)
         ignoreNoParticipants = \(ignoreNoParticipants)\(ignoreNoParticipants ? " (detección ignora eventos sin invitados ni link de video)" : "")
         calendarIgnore   = \(calendarIgnore.isEmpty ? "(ninguno)" : calendarIgnore)
         aiProvider       = \(aiProvider.rawValue) — \(aiProvider.label)
@@ -138,6 +147,9 @@ struct AriaConfig: Codable {
         visualContextEnabled = \(visualContextEnabled) (capturas + OCR local durante la grabación)
         visualContextExcludedApps = \(visualContextExcludedApps.isEmpty ? "(ninguna)" : visualContextExcludedApps)
         visualContextChangeThreshold = \(visualContextChangeThreshold) (fracción de la huella de luminancia que debe cambiar para disparar una captura)
+        speakerSeparationEnabled = \(speakerSeparationEnabled)\(speakerSeparationEnabled ? " (separa voces dentro del canal del sistema en Hablante 1/2/3…)" : "")
+        voiceMemoryEnabled = \(voiceMemoryEnabled)\(voiceMemoryEnabled ? " (recuerda voces confirmadas, cifrado local)" : "")
+        participantsAccessibilityEnabled = \(participantsAccessibilityEnabled)\(participantsAccessibilityEnabled ? " (lee participantes de Zoom/Teams vía Accesibilidad)" : "")
         (archivo: \(Self.fileURL.path))
         """
     }
@@ -154,6 +166,7 @@ struct AriaConfig: Codable {
         case "language": return language
         case "transcriptPolish": return String(transcriptPolish)
         case "showUpcoming": return String(showUpcoming)
+        case "showMenuBarTitle": return String(showMenuBarTitle)
         case "ignoreNoParticipants": return String(ignoreNoParticipants)
         case "calendarIgnore": return calendarIgnore.isEmpty ? "(ninguno)" : calendarIgnore
         case "aiProvider": return aiProvider.rawValue
@@ -164,6 +177,9 @@ struct AriaConfig: Codable {
         case "visualContextEnabled": return String(visualContextEnabled)
         case "visualContextExcludedApps": return visualContextExcludedApps.isEmpty ? "(ninguna)" : visualContextExcludedApps
         case "visualContextChangeThreshold": return String(visualContextChangeThreshold)
+        case "speakerSeparationEnabled": return String(speakerSeparationEnabled)
+        case "voiceMemoryEnabled": return String(voiceMemoryEnabled)
+        case "participantsAccessibilityEnabled": return String(participantsAccessibilityEnabled)
         default: return nil
         }
     }
@@ -212,6 +228,11 @@ struct AriaConfig: Codable {
                 throw Self.validationError("showUpcoming debe ser true o false")
             }
             showUpcoming = flag
+        case "showMenuBarTitle":
+            guard let flag = Bool(value.lowercased()) else {
+                throw Self.validationError("showMenuBarTitle debe ser true o false")
+            }
+            showMenuBarTitle = flag
         case "ignoreNoParticipants":
             guard let flag = Bool(value.lowercased()) else {
                 throw Self.validationError("ignoreNoParticipants debe ser true o false")
@@ -246,8 +267,23 @@ struct AriaConfig: Codable {
                 throw Self.validationError("visualContextChangeThreshold debe ser un número entre 0 y 1 (fracción de cambio)")
             }
             visualContextChangeThreshold = threshold
+        case "speakerSeparationEnabled":
+            guard let flag = Bool(value.lowercased()) else {
+                throw Self.validationError("speakerSeparationEnabled debe ser true o false")
+            }
+            speakerSeparationEnabled = flag
+        case "voiceMemoryEnabled":
+            guard let flag = Bool(value.lowercased()) else {
+                throw Self.validationError("voiceMemoryEnabled debe ser true o false")
+            }
+            voiceMemoryEnabled = flag
+        case "participantsAccessibilityEnabled":
+            guard let flag = Bool(value.lowercased()) else {
+                throw Self.validationError("participantsAccessibilityEnabled debe ser true o false")
+            }
+            participantsAccessibilityEnabled = flag
         default:
-            throw Self.validationError("Clave desconocida '\(key)'. Válidas: claudeModel, obsidianDir, keepAudio, whisperModel, systemPromptPath, alwaysOn, retentionDays, language, transcriptPolish, showUpcoming, ignoreNoParticipants, calendarIgnore, aiProvider, aiModel, aiBaseURL, slackWebhookURL, notionDatabaseID, visualContextEnabled, visualContextExcludedApps, visualContextChangeThreshold")
+            throw Self.validationError("Clave desconocida '\(key)'. Válidas: claudeModel, obsidianDir, keepAudio, whisperModel, systemPromptPath, alwaysOn, retentionDays, language, transcriptPolish, showUpcoming, showMenuBarTitle, ignoreNoParticipants, calendarIgnore, aiProvider, aiModel, aiBaseURL, slackWebhookURL, notionDatabaseID, visualContextEnabled, visualContextExcludedApps, visualContextChangeThreshold, speakerSeparationEnabled, voiceMemoryEnabled, participantsAccessibilityEnabled")
         }
     }
 

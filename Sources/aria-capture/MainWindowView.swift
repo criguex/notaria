@@ -409,6 +409,11 @@ struct MeetingDetailView: View {
 
                     if !segments.isEmpty {
                         Divider()
+                        ParticipantsPanelView(meetingID: meetingID) {
+                            segments = (try? MeetingStore().segments(meetingID: meetingID)) ?? segments
+                        }
+
+                        Divider()
                         HStack {
                             Text("Transcript").font(.headline)
                             Spacer()

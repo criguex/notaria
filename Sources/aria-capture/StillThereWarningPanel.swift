@@ -4,7 +4,11 @@ import SwiftUI
 @MainActor
 final class StillThereWarningViewModel: ObservableObject {
     @Published var remainingSeconds: Int
-    init(remainingSeconds: Int) { self.remainingSeconds = remainingSeconds }
+    let totalSeconds: Int
+    init(remainingSeconds: Int, totalSeconds: Int) {
+        self.remainingSeconds = remainingSeconds
+        self.totalSeconds = max(1, totalSeconds)
+    }
 }
 
 @MainActor
@@ -17,9 +21,14 @@ final class StillThereWarningWindowController {
 
     var isPresenting: Bool { panel != nil }
 
-    func present(remainingSeconds: Int, onKeepGoing: @escaping () -> Void, onStop: @escaping () -> Void) {
+    func present(
+        remainingSeconds: Int,
+        totalSeconds: Int = Int(RecordingSessionMachine.defaultCountdownSeconds),
+        onKeepGoing: @escaping () -> Void,
+        onStop: @escaping () -> Void
+    ) {
         dismiss()
-        let size = NSSize(width: 360, height: 128)
+        let size = NSSize(width: 360, height: 132)
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -30,10 +39,10 @@ final class StillThereWarningWindowController {
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let viewModel = StillThereWarningViewModel(remainingSeconds: remainingSeconds)
+        let viewModel = StillThereWarningViewModel(remainingSeconds: remainingSeconds, totalSeconds: totalSeconds)
         let view = StillThereWarningView(
             viewModel: viewModel,
             onKeepGoing: { [weak self] in
@@ -46,12 +55,9 @@ final class StillThereWarningWindowController {
             }
         )
         panel.contentView = NSHostingView(rootView: view)
-        let area = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
-        let margin: CGFloat = 16
-        panel.setFrameOrigin(NSPoint(x: area.maxX - size.width - margin, y: area.maxY - size.height - margin))
         self.panel = panel
         self.viewModel = viewModel
-        panel.orderFrontRegardless()
+        ToastStackRegistry.shared.present(panel)
     }
 
     func updateCountdown(_ remainingSeconds: Int) {
@@ -59,9 +65,12 @@ final class StillThereWarningWindowController {
     }
 
     func dismiss() {
-        panel?.orderOut(nil)
-        panel = nil
-        viewModel = nil
+        guard let panel else { return }
+        self.panel = nil
+        self.viewModel = nil
+        ToastStackRegistry.shared.dismiss(panel) {
+            panel.contentView = nil
+        }
     }
 }
 
@@ -70,18 +79,23 @@ struct StillThereWarningView: View {
     let onKeepGoing: () -> Void
     let onStop: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "questionmark.circle.fill")
                     .foregroundStyle(BrandColor.sello)
                     .font(.title3)
-                Text("¿Sigues en la reunión?").font(.headline).lineLimit(1)
+                Text("¿Sigues en la reunión?")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(BrandColor.toastTitle(for: colorScheme))
+                    .lineLimit(1)
                 Spacer(minLength: 0)
             }
             Text("Sin audio del sistema. Se detendrá y se generará la nota en \(viewModel.remainingSeconds) s.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11))
+                .foregroundStyle(BrandColor.toastSecondary(for: colorScheme))
             HStack {
                 Spacer()
                 Button("Detener", action: onStop)
@@ -93,9 +107,15 @@ struct StillThereWarningView: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(14)
-        .frame(width: 360, height: 128)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.08)))
+        .padding(16)
+        .frame(width: 360, height: 132, alignment: .topLeading)
+        .background(ToastCardBackground())
+        .overlay(alignment: .bottom) {
+            ToastCountdownBar(
+                fraction: ToastProgress.fraction(remaining: viewModel.remainingSeconds, total: viewModel.totalSeconds)
+            )
+            .padding(.horizontal, 3)
+            .padding(.bottom, 3)
+        }
     }
 }

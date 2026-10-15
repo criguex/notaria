@@ -12,9 +12,15 @@ final class Fase8LogicTests: XCTestCase {
         return samples
     }
 
+    private func missingModelURL() -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("aria-silero-missing-\(UUID().uuidString).bin")
+    }
+
     func testSileroModelIsUnavailableWithoutFile() {
-        XCTAssertFalse(SileroModel.isAvailable)
-        XCTAssertEqual(VADFactory.backendName(), "energy")
+        let missing = missingModelURL()
+        XCTAssertFalse(SileroModel.isAvailable(at: missing))
+        XCTAssertEqual(VADFactory.backendName(modelAvailable: SileroModel.isAvailable(at: missing)), "energy")
         XCTAssertEqual(VADFactory.backendName(modelAvailable: true), "silero")
     }
 
@@ -32,7 +38,7 @@ final class Fase8LogicTests: XCTestCase {
     }
 
     func testVADFactoryPrefersEnergyWhenModelAbsent() {
-        let vad = VADFactory.preferred()
+        let vad = VADFactory.preferred(modelURL: missingModelURL())
         XCTAssertTrue(vad is EnergyVAD)
     }
 

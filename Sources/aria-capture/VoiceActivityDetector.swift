@@ -27,8 +27,10 @@ enum SileroModel {
         WhisperModelStore.modelsDirectory.appendingPathComponent(fileName)
     }
 
-    static var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: url.path)
+    static var isAvailable: Bool { isAvailable(at: url) }
+
+    static func isAvailable(at modelURL: URL) -> Bool {
+        FileManager.default.fileExists(atPath: modelURL.path)
     }
 
     @discardableResult
@@ -134,9 +136,9 @@ enum VADFactory {
         modelAvailable ? "silero" : "energy"
     }
 
-    static func preferred(options: ChunkingOptions = .default) -> VoiceActivityDetector {
-        guard SileroModel.isAvailable,
-              let silero = SileroVAD(modelPath: SileroModel.url.path, options: options) else {
+    static func preferred(options: ChunkingOptions = .default, modelURL: URL = SileroModel.url) -> VoiceActivityDetector {
+        guard SileroModel.isAvailable(at: modelURL),
+              let silero = SileroVAD(modelPath: modelURL.path, options: options) else {
             return EnergyVAD(options: options)
         }
         return silero

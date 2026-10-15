@@ -73,8 +73,11 @@ final class RecordingController: ObservableObject {
                         lastKey: self.lastPromptKey
                     ) {
                         self.lastPromptKey = key
+                        let joinURL = signal.meetingNow?.videoLink.flatMap { MeetingJoinLink.resolve(videoLink: $0) }
                         MeetingPromptWindowController.shared.present(
-                            title: MeetingPromptDecider.promptTitle(meetingNow: signal.meetingNow)
+                            title: MeetingPromptDecider.promptTitle(meetingNow: signal.meetingNow),
+                            subtitle: MeetingPromptDecider.promptSubtitle(meetingNow: signal.meetingNow),
+                            joinURL: joinURL
                         ) { [weak self] in
                             self?.start()
                         }
@@ -300,7 +303,13 @@ final class RecordingController: ObservableObject {
 
                 state = .processing(step: "transcribiendo (\(Int(written.seconds)) s)")
                 let transcription = try await transcribeWav(path: wavURL.path)
-                var segments = transcription.segments
+                let speakerResolution = SpeakerResolutionPipeline.resolve(
+                    segments: transcription.segments,
+                    calendarMeeting: calendarMeeting,
+                    speakerEmbeddings: transcription.speakerEmbeddings,
+                    voiceMemoryEnabled: AriaConfig.load().voiceMemoryEnabled
+                )
+                var segments = speakerResolution.segments
                 if AriaConfig.load().transcriptPolish, !segments.isEmpty,
                    let polishBackend = ClaudeCLIClient.preferredBackend() {
                     state = .processing(step: "puliendo transcript")
@@ -315,7 +324,8 @@ final class RecordingController: ObservableObject {
                 let transcript = TranscriptFormatter.render(segments, pauses: pauses)
                 let legacyNotes = NotesStore().rawMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
                 let ownNotes = MeetingNotepadLogic.mergedOwnNotes(legacyNotes, ownNotesDraft)
-                let participants = CalendarMeeting.participants(meeting: calendarMeeting, fallback: transcription.speakers)
+                let speakerFallback = SpeakerNaming.orderedSpeakerLabels(in: segments).map(SpeakerNaming.cleanLabel)
+                let participants = CalendarMeeting.participants(meeting: calendarMeeting, fallback: speakerFallback)
 
                 let note: MeetingNote
                 if let backend = ClaudeCLIClient.preferredBackend(), !transcript.isEmpty {
@@ -394,6 +404,7 @@ final class RecordingController: ObservableObject {
                         pauses: pauses
                    ) {
                     try? store.insertVisualCaptures(savedVisualImagePaths, meetingID: meetingID)
+                    try? store.saveSpeakerEmbeddings(speakerResolution.embeddings, meetingID: meetingID)
                 }
                 try? NotesStore().clear()
                 state = .done(noteURL: url)
@@ -529,27 +540,44 @@ struct AriaMenuView: View {
         return controller.callDetected ? "Grabar esta llamada" : "Grabar reunión"
     }
 
+    private var cardMeeting: CalendarMeeting? { controller.meetingNow ?? controller.upcomingMeeting }
+
     var body: some View {
+        if let meeting = cardMeeting {
+            let card = MeetingCardBuilder.build(
+                meeting: meeting,
+                at: Date(),
+                nativeAppInstalled: meeting.videoLink.map(MeetingJoinLink.isNativeAppAvailable(forVideoLink:)) ?? false
+            )
+            MeetingCardView(
+                viewModel: card,
+                onJoin: { if let url = card.joinURL { NSWorkspace.shared.open(url) } },
+                onJoinAndTakeNotes: {
+                    if let url = card.joinURL { NSWorkspace.shared.open(url) }
+                    controller.start()
+                }
+            )
+            Divider()
+        }
         Button("Abrir NotarIA") { MainWindowBridge.shared.triggerOpen() }
             .keyboardShortcut("a", modifiers: [.command, .shift])
         Divider()
         switch controller.state {
         case .idle:
-            if let meeting = controller.meetingNow {
-                Text("📅 En calendario: \(meeting.title)")
-            } else if let next = controller.upcomingMeeting {
-                Text("📅 Próxima: \(next.title) · \(next.start.formatted(date: .omitted, time: .shortened)) (\(next.countdown(at: Date())))")
-            }
             if controller.callDetected {
-                Text("📞 Parece que estás en una llamada")
+                Label("Parece que estás en una llamada", systemImage: "phone.fill")
             }
             Button(recordButtonTitle) { controller.start() }
-            Button("🎙️ Modo dictado (solo mic)") { controller.start(dictationOnly: true) }
+            Button {
+                controller.start(dictationOnly: true)
+            } label: {
+                Label("Modo dictado (solo mic)", systemImage: "mic")
+            }
         case .recording(let since):
             if controller.isPaused {
-                Text("⏸️ En pausa\(controller.isDictation ? " (modo dictado)" : "") — iniciada \(since.formatted(date: .omitted, time: .shortened))")
+                Label("En pausa\(controller.isDictation ? " (modo dictado)" : "") — iniciada \(since.formatted(date: .omitted, time: .shortened))", systemImage: "pause.circle")
             } else {
-                Text("Grabando\(controller.isDictation ? " (modo dictado)" : "") desde \(since.formatted(date: .omitted, time: .shortened))")
+                Label("Grabando\(controller.isDictation ? " (modo dictado)" : "") desde \(since.formatted(date: .omitted, time: .shortened))", systemImage: "record.circle")
             }
             Button(controller.isPaused ? "Reanudar grabación" : "Pausar grabación") {
                 if controller.isPaused { controller.resumeRecording() } else { controller.pauseRecording() }
@@ -568,13 +596,15 @@ struct AriaMenuView: View {
                 controller.start()
             }
         }
-        Button("📝 Notas rápidas…") {
+        Button {
             NSApp.activate(ignoringOtherApps: true)
             openWindow(id: "aria-notes")
+        } label: {
+            Label("Notas rápidas…", systemImage: "note.text")
         }
         Divider()
         if controller.alwaysOn {
-            Text("👂 Always-on activo: NotarIA está escuchando llamadas")
+            Label("Always-on activo: NotarIA está escuchando llamadas", systemImage: "ear")
         }
         Button(controller.alwaysOn ? "Pausar always-on" : "Activar always-on…") {
             controller.toggleAlwaysOn()
@@ -588,9 +618,11 @@ struct AriaMenuView: View {
                     }
                 }
             }
-            Button("💬 Preguntar a tus reuniones…") {
+            Button {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "aria-chat")
+            } label: {
+                Label("Preguntar a tus reuniones…", systemImage: "bubble.left.and.bubble.right")
             }
         }
         Divider()
@@ -658,10 +690,11 @@ struct MenuBarLabelContent: View {
                     Text(controller.isPaused ? "PAUSA \(controller.recordingElapsed)" : "REC \(controller.recordingElapsed)")
                 }
             } else if case .idle = controller.state,
-                      let soon = controller.upcomingMeeting?.barCountdown(at: Date()) {
+                      AriaConfig.load().showMenuBarTitle,
+                      let title = MenuBarMeetingTitle.text(meetingNow: controller.meetingNow, upcoming: controller.upcomingMeeting, at: Date()) {
                 HStack(spacing: 3) {
                     Image(systemName: "calendar.badge.clock")
-                    Text(soon)
+                    Text(title).monospacedDigit()
                 }
             } else {
                 switch icon {

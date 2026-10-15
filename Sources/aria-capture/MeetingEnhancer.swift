@@ -38,11 +38,16 @@ final class MeetingEnhancer {
     reordenar lo que el usuario ya escribió. Usa wikilinks [[Nombre]] para personas/proyectos
     si aparecen. Responde SOLO con la nota en Markdown, sin preámbulos ni cierres.
 
-    Hablantes: el transcript trae canales genéricos ("Yo" = el usuario, "Otros" = los demás).
-    Cuando los participantes del calendario o la propia conversación (presentaciones, "gracias
-    <nombre>", a quién se dirigen) permitan saber quién habla, usa el nombre real al citar y al
-    asignar decisiones y action items; si "Otros" mezcla varias personas, distínguelas cuando el
-    contexto lo permita. Si no hay certeza, conserva "Yo"/"Otros" — NUNCA inventes nombres.
+    Hablantes: "Yo" es el usuario (micrófono). El resto puede venir ya separado en "Hablante 1",
+    "Hablante 2", etc. (voces distintas detectadas dentro del canal del sistema) o sin separar como
+    "Otros"/"Ellos" si no se pudo distinguir. Una etiqueta puede traer una sugerencia de nombre sin
+    confirmar, con el formato "Hablante N (¿Ana?)": trátala como DUDOSA, no como un hecho — puedes
+    usarla para dar contexto ("probablemente Ana") pero NUNCA la presentes como certeza ni le
+    atribuyas una decisión o action item igual que a un nombre confirmado. Cuando una etiqueta ya
+    es un nombre real sin paréntesis (p.ej. "Ana" o "Ana"), eso SÍ está confirmado (por
+    calendario, memoria de voz o el usuario) y puedes usarlo con naturalidad al citar y al asignar
+    decisiones y action items. Si solo tienes "Hablante N"/"Otros" sin ninguna pista, conserva esa
+    etiqueta — NUNCA inventes nombres ni resuelvas un "(¿Nombre?)" a secas sin el signo de duda.
 
     Contexto visual: si recibes un bloque "Contexto visual (OCR local)", es texto extraído por OCR
     de capturas de pantalla durante la reunión, con hora. Úsalo solo para enriquecer con detalle

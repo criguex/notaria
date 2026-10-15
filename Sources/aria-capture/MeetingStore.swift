@@ -76,6 +76,12 @@ final class MeetingStore {
             ocr_text TEXT NOT NULL,
             image_path TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS speaker_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id),
+            speaker_label TEXT NOT NULL,
+            embedding_json TEXT NOT NULL
+        );
         """)
         try migrateSchemaIfNeeded()
     }
@@ -463,6 +469,56 @@ final class MeetingStore {
         let paths = try visualCaptures(meetingID: meetingID).map(\.imagePath)
         try execute("DELETE FROM visual_captures WHERE meeting_id = \(meetingID)")
         return paths
+    }
+
+    func saveSpeakerEmbeddings(_ embeddings: [String: SpeakerEmbedding], meetingID: Int64) throws {
+        guard !embeddings.isEmpty else { return }
+        let insert = try prepare(
+            "INSERT INTO speaker_profiles (meeting_id, speaker_label, embedding_json) VALUES (?, ?, ?)"
+        )
+        defer { sqlite3_finalize(insert) }
+        for (label, embedding) in embeddings {
+            guard let data = try? JSONEncoder().encode(embedding),
+                  let json = String(data: data, encoding: .utf8) else { continue }
+            sqlite3_reset(insert)
+            sqlite3_bind_int64(insert, 1, meetingID)
+            sqlite3_bind_text(insert, 2, label, -1, Self.sqliteTransient)
+            sqlite3_bind_text(insert, 3, cipher.encrypt(json), -1, Self.sqliteTransient)
+            guard sqlite3_step(insert) == SQLITE_DONE else {
+                throw Self.error(db, context: "insertando perfil de hablante")
+            }
+        }
+    }
+
+    func speakerEmbeddings(meetingID: Int64) throws -> [String: SpeakerEmbedding] {
+        let query = try prepare(
+            "SELECT speaker_label, embedding_json FROM speaker_profiles WHERE meeting_id = ?"
+        )
+        defer { sqlite3_finalize(query) }
+        sqlite3_bind_int64(query, 1, meetingID)
+
+        var result: [String: SpeakerEmbedding] = [:]
+        while sqlite3_step(query) == SQLITE_ROW {
+            let label = String(cString: sqlite3_column_text(query, 0))
+            let json = cipher.decrypt(String(cString: sqlite3_column_text(query, 1)))
+            guard let data = json.data(using: .utf8),
+                  let embedding = try? JSONDecoder().decode(SpeakerEmbedding.self, from: data) else { continue }
+            result[label] = embedding
+        }
+        return result
+    }
+
+    func renameSpeakerProfile(meetingID: Int64, oldLabel: String, newLabel: String) throws {
+        let update = try prepare(
+            "UPDATE speaker_profiles SET speaker_label = ? WHERE meeting_id = ? AND speaker_label = ?"
+        )
+        defer { sqlite3_finalize(update) }
+        sqlite3_bind_text(update, 1, newLabel, -1, Self.sqliteTransient)
+        sqlite3_bind_int64(update, 2, meetingID)
+        sqlite3_bind_text(update, 3, oldLabel, -1, Self.sqliteTransient)
+        guard sqlite3_step(update) == SQLITE_DONE else {
+            throw Self.error(db, context: "renombrando perfil de hablante")
+        }
     }
 
     private func execute(_ sql: String) throws {
