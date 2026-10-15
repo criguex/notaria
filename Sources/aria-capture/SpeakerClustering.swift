@@ -7,10 +7,11 @@ import Foundation
 enum SpeakerClustering {
 
     struct Options {
-        // Calibrado con voces reales sintetizadas (say) en esta sesión: mismo hablante ~0.997-0.999
-        // de similitud coseno, hablantes distintos ~0.92-0.97 — 0.93 separa voces claramente
-        // distintas y prefiere no separar las muy parecidas (falla hacia el comportamiento actual).
-        var similarityThreshold: Float = 0.93
+        // Recalibrado con voces reales sintetizadas (say, dos voces distintas) en QA E2E:
+        // mismo hablante ~0.983-0.999 de similitud coseno, hablantes distintos ~0.94-0.96.
+        // 0.93 (valor anterior) caía DENTRO del rango de hablantes distintos, así que nunca
+        // separaba voces reales — 0.97 cae en el hueco entre ambos rangos.
+        var similarityThreshold: Float = 0.97
         var minClusterSeconds: Double = 1.2
         var maxClusters: Int = 6
         static let `default` = Options()

@@ -29,7 +29,7 @@ final class MeetingStore {
 
     init(databaseURL: URL? = nil) throws {
         cipher = try CacheCipher()
-        let url = databaseURL ?? FileManager.default.homeDirectoryForCurrentUser
+        let url = databaseURL ?? AriaHome.directory
             .appendingPathComponent("Library/Application Support/Aria/aria.db")
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),

@@ -14,6 +14,9 @@ struct AriaConfig: Codable {
     var showMenuBarTitle = true
     var ignoreNoParticipants = false
     var calendarIgnore = ""
+    var promptExcludedCalendars = ""
+    var promptIncludedCalendars = ""
+    var promptExcludedAccounts = ""
     var aiProvider = AIProviderKind.auto
     var aiModel = ""
     var aiBaseURL = ""
@@ -42,6 +45,9 @@ struct AriaConfig: Codable {
         showMenuBarTitle = try container.decodeIfPresent(Bool.self, forKey: .showMenuBarTitle) ?? showMenuBarTitle
         ignoreNoParticipants = try container.decodeIfPresent(Bool.self, forKey: .ignoreNoParticipants) ?? ignoreNoParticipants
         calendarIgnore = try container.decodeIfPresent(String.self, forKey: .calendarIgnore) ?? calendarIgnore
+        promptExcludedCalendars = try container.decodeIfPresent(String.self, forKey: .promptExcludedCalendars) ?? promptExcludedCalendars
+        promptIncludedCalendars = try container.decodeIfPresent(String.self, forKey: .promptIncludedCalendars) ?? promptIncludedCalendars
+        promptExcludedAccounts = try container.decodeIfPresent(String.self, forKey: .promptExcludedAccounts) ?? promptExcludedAccounts
         aiProvider = try container.decodeIfPresent(AIProviderKind.self, forKey: .aiProvider) ?? aiProvider
         aiModel = try container.decodeIfPresent(String.self, forKey: .aiModel) ?? aiModel
         aiBaseURL = try container.decodeIfPresent(String.self, forKey: .aiBaseURL) ?? aiBaseURL
@@ -61,6 +67,23 @@ struct AriaConfig: Codable {
             .filter { !$0.isEmpty }
     }
 
+    private static func parsedIdentifierList(_ raw: String) -> [String] {
+        raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Identificadores de EKCalendar (`calendarIdentifier`) con "Ofrecer grabar" apagado explícitamente.
+    var promptExcludedCalendarIDs: [String] { Self.parsedIdentifierList(promptExcludedCalendars) }
+
+    /// Identificadores de EKCalendar con "Ofrecer grabar" encendido explícitamente — tiene prioridad
+    /// sobre el default de cuentas de trabajo (Exchange/Outlook).
+    var promptIncludedCalendarIDs: [String] { Self.parsedIdentifierList(promptIncludedCalendars) }
+
+    /// Identificadores de EKSource (cuentas completas) con "Ofrecer grabar" apagado para todos sus calendarios.
+    var promptExcludedAccountIDs: [String] { Self.parsedIdentifierList(promptExcludedAccounts) }
+
     var excludedVisualContextBundleIDs: [String] {
         VisualAppExclusionPolicy.parsedList(visualContextExcludedApps)
     }
@@ -69,7 +92,7 @@ struct AriaConfig: Codable {
     static let validLanguages = ["es", "en", "auto"]
 
     static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        AriaHome.directory
             .appendingPathComponent("Library/Application Support/Aria/config.json")
     }
 
@@ -139,6 +162,9 @@ struct AriaConfig: Codable {
         showMenuBarTitle = \(showMenuBarTitle) (título + cuenta atrás junto al glifo de la barra)
         ignoreNoParticipants = \(ignoreNoParticipants)\(ignoreNoParticipants ? " (detección ignora eventos sin invitados ni link de video)" : "")
         calendarIgnore   = \(calendarIgnore.isEmpty ? "(ninguno)" : calendarIgnore)
+        promptExcludedCalendars = \(promptExcludedCalendars.isEmpty ? "(ninguno)" : promptExcludedCalendars) (calendarios sin "Ofrecer grabar")
+        promptIncludedCalendars = \(promptIncludedCalendars.isEmpty ? "(ninguno)" : promptIncludedCalendars) (overrides explícitos encendidos)
+        promptExcludedAccounts  = \(promptExcludedAccounts.isEmpty ? "(ninguno)" : promptExcludedAccounts) (cuentas EKSource sin "Ofrecer grabar")
         aiProvider       = \(aiProvider.rawValue) — \(aiProvider.label)
         aiModel          = \(aiModel.isEmpty ? "(usa claudeModel si aplica)" : aiModel)
         aiBaseURL        = \(aiBaseURL.isEmpty ? "(default del proveedor)" : aiBaseURL)
@@ -169,6 +195,9 @@ struct AriaConfig: Codable {
         case "showMenuBarTitle": return String(showMenuBarTitle)
         case "ignoreNoParticipants": return String(ignoreNoParticipants)
         case "calendarIgnore": return calendarIgnore.isEmpty ? "(ninguno)" : calendarIgnore
+        case "promptExcludedCalendars": return promptExcludedCalendars.isEmpty ? "(ninguno)" : promptExcludedCalendars
+        case "promptIncludedCalendars": return promptIncludedCalendars.isEmpty ? "(ninguno)" : promptIncludedCalendars
+        case "promptExcludedAccounts": return promptExcludedAccounts.isEmpty ? "(ninguno)" : promptExcludedAccounts
         case "aiProvider": return aiProvider.rawValue
         case "aiModel": return aiModel.isEmpty ? "(ninguno)" : aiModel
         case "aiBaseURL": return aiBaseURL.isEmpty ? "(ninguno)" : aiBaseURL
@@ -240,6 +269,12 @@ struct AriaConfig: Codable {
             ignoreNoParticipants = flag
         case "calendarIgnore":
             calendarIgnore = value == "(ninguno)" ? "" : value
+        case "promptExcludedCalendars":
+            promptExcludedCalendars = value == "(ninguno)" ? "" : value
+        case "promptIncludedCalendars":
+            promptIncludedCalendars = value == "(ninguno)" ? "" : value
+        case "promptExcludedAccounts":
+            promptExcludedAccounts = value == "(ninguno)" ? "" : value
         case "aiProvider":
             guard let kind = AIProviderKind(rawValue: value) else {
                 throw Self.validationError("aiProvider debe ser uno de: \(AIProviderKind.allCases.map(\.rawValue).joined(separator: ", "))")
@@ -283,7 +318,7 @@ struct AriaConfig: Codable {
             }
             participantsAccessibilityEnabled = flag
         default:
-            throw Self.validationError("Clave desconocida '\(key)'. Válidas: claudeModel, obsidianDir, keepAudio, whisperModel, systemPromptPath, alwaysOn, retentionDays, language, transcriptPolish, showUpcoming, showMenuBarTitle, ignoreNoParticipants, calendarIgnore, aiProvider, aiModel, aiBaseURL, slackWebhookURL, notionDatabaseID, visualContextEnabled, visualContextExcludedApps, visualContextChangeThreshold, speakerSeparationEnabled, voiceMemoryEnabled, participantsAccessibilityEnabled")
+            throw Self.validationError("Clave desconocida '\(key)'. Válidas: claudeModel, obsidianDir, keepAudio, whisperModel, systemPromptPath, alwaysOn, retentionDays, language, transcriptPolish, showUpcoming, showMenuBarTitle, ignoreNoParticipants, calendarIgnore, promptExcludedCalendars, promptIncludedCalendars, promptExcludedAccounts, aiProvider, aiModel, aiBaseURL, slackWebhookURL, notionDatabaseID, visualContextEnabled, visualContextExcludedApps, visualContextChangeThreshold, speakerSeparationEnabled, voiceMemoryEnabled, participantsAccessibilityEnabled")
         }
     }
 

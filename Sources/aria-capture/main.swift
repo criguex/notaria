@@ -798,13 +798,17 @@ case "calendar":
         .filter { !$0.isAllDay }
         .sorted { $0.start < $1.start }
     let current = MeetingCalendar.shared.currentMeeting(at: calendarNow)
-    let visibleCalendars = MeetingCalendar.shared.calendarNames()
+    let visibleCalendars = MeetingCalendar.shared.calendarListings()
     if visibleCalendars.isEmpty {
         print("[aviso] EventKit no ve NINGÚN calendario. Añade tus cuentas en Ajustes del Sistema › Cuentas de Internet (Google/Exchange) con \"Calendarios\" activado.")
     } else {
         print("Calendarios visibles (\(visibleCalendars.count)):")
         for calendar in visibleCalendars {
-            print("  \(calendar.source) › \(calendar.title)\(calendar.ignored ? " — IGNORADO (calendarIgnore)" : "")")
+            let flags = [
+                calendar.ignored ? "oculto de agenda" : nil,
+                calendar.promptExcluded ? "sin ofrecer grabar" : nil
+            ].compactMap { $0 }
+            print("  \(calendar.source) › \(calendar.title)\(flags.isEmpty ? "" : " — \(flags.joined(separator: ", "))")")
         }
     }
     if todays.isEmpty {

@@ -13,7 +13,7 @@ final class NotesStore {
         if let fileURL {
             self.fileURL = fileURL
         } else {
-            let dir = FileManager.default.homeDirectoryForCurrentUser
+            let dir = AriaHome.directory
                 .appendingPathComponent("Documents/Aria", isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             self.fileURL = dir.appendingPathComponent("notes.md")

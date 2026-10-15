@@ -61,6 +61,30 @@ final class RecordingController: ObservableObject {
                     self.upcomingMeeting = self.showUpcoming && signal.meetingNow == nil
                         ? MeetingCalendar.shared.nextMeeting()
                         : nil
+                    self.lastPromptKey = MeetingPromptDecider.updatedLastKey(
+                        micInUse: signal.micInUse,
+                        callApps: signal.callApps,
+                        meetingNow: signal.meetingNow,
+                        lastKey: self.lastPromptKey
+                    )
+                    DetectorLogWriter.shared.append(DetectorLogFormatter.line(
+                        at: Date(),
+                        micInUse: signal.micInUse,
+                        callApps: signal.callApps,
+                        hasMeetingNow: signal.meetingNow != nil,
+                        meetingPromptExcluded: signal.meetingNow?.promptExcluded ?? false,
+                        alwaysOn: self.alwaysOn,
+                        isRecording: self.isRecording,
+                        decision: MeetingPromptDecider.decision(
+                            micInUse: signal.micInUse,
+                            callApps: signal.callApps,
+                            meetingNow: signal.meetingNow,
+                            alwaysOn: self.alwaysOn,
+                            isRecording: self.isRecording,
+                            hasConsent: ConsentManager.hasConsent,
+                            lastKey: self.lastPromptKey
+                        ).rawValue
+                    ))
                     if self.callDetected, self.alwaysOn, ConsentManager.hasConsent {
                         self.autoStarted = true
                         self.start()
@@ -295,7 +319,7 @@ final class RecordingController: ObservableObject {
             do {
                 let stamp = DateFormatter()
                 stamp.dateFormat = "yyyy-MM-dd HHmm"
-                let wavURL = FileManager.default.homeDirectoryForCurrentUser
+                let wavURL = AriaHome.directory
                     .appendingPathComponent("Documents/Aria/Grabaciones/\(stamp.string(from: since)).wav")
                 let written = try recorder.write(to: wavURL)
 

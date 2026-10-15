@@ -1,3 +1,4 @@
+import EventKit
 import XCTest
 @testable import aria_capture
 
@@ -206,5 +207,99 @@ extension CalendarLogicTests {
         XCTAssertEqual(config.ignoredCalendars, ["festivos de colombia", "birthdays"])
         try config.set(key: "calendarIgnore", value: "(ninguno)")
         XCTAssertEqual(config.ignoredCalendars, [])
+    }
+}
+
+extension CalendarLogicTests {
+
+    func testHasCancelledTitlePrefixCaseAndAccentInsensitive() {
+        XCTAssertTrue(CalendarMeeting.hasCancelledTitlePrefix("Cancelado: BCPR Daily Oficial"))
+        XCTAssertTrue(CalendarMeeting.hasCancelledTitlePrefix("Canceled: Integration Layer Daily"))
+        XCTAssertTrue(CalendarMeeting.hasCancelledTitlePrefix("CANCELLED: Sync"))
+        XCTAssertTrue(CalendarMeeting.hasCancelledTitlePrefix("cancelada: 1:1"))
+        XCTAssertTrue(CalendarMeeting.hasCancelledTitlePrefix("  Cancelado: con espacios"))
+        XCTAssertFalse(CalendarMeeting.hasCancelledTitlePrefix("Sync normal"))
+        XCTAssertFalse(CalendarMeeting.hasCancelledTitlePrefix("No es Cancelado en medio"))
+    }
+
+    func testIsHiddenCoversCancelledDeclinedAndAllDay() {
+        XCTAssertTrue(CalendarMeeting.isHidden(title: "Daily", isAllDay: true, statusCancelled: false, userDeclined: false))
+        XCTAssertTrue(CalendarMeeting.isHidden(title: "Daily", isAllDay: false, statusCancelled: true, userDeclined: false))
+        XCTAssertTrue(CalendarMeeting.isHidden(title: "Daily", isAllDay: false, statusCancelled: false, userDeclined: true))
+        XCTAssertTrue(CalendarMeeting.isHidden(title: "Cancelado: Daily", isAllDay: false, statusCancelled: false, userDeclined: false))
+        XCTAssertFalse(CalendarMeeting.isHidden(title: "Daily", isAllDay: false, statusCancelled: false, userDeclined: false))
+    }
+}
+
+extension CalendarLogicTests {
+
+    func testCalendarAccountKindClassifiesExchangeAndOutlookCalDAV() {
+        XCTAssertEqual(CalendarAccountKind.classify(sourceType: .exchange, sourceTitle: "Trabajo"), .exchange)
+        XCTAssertEqual(CalendarAccountKind.classify(sourceType: .calDAV, sourceTitle: "Outlook"), .outlookCalDAV)
+        XCTAssertEqual(CalendarAccountKind.classify(sourceType: .calDAV, sourceTitle: "outlook.office365.com"), .outlookCalDAV)
+        XCTAssertEqual(CalendarAccountKind.classify(sourceType: .calDAV, sourceTitle: "iCloud"), .other)
+        XCTAssertEqual(CalendarAccountKind.classify(sourceType: .local, sourceTitle: "On My Mac"), .other)
+        XCTAssertTrue(CalendarAccountKind.exchange.isWorkAccountDefault)
+        XCTAssertTrue(CalendarAccountKind.outlookCalDAV.isWorkAccountDefault)
+        XCTAssertFalse(CalendarAccountKind.other.isWorkAccountDefault)
+    }
+
+    func testPromptPolicyDefaultsWorkAccountsExcludedUnlessOverridden() {
+        XCTAssertTrue(CalendarPromptPolicy.isExcluded(
+            calendarIdentifier: "cal-exchange", sourceIdentifier: "src-work", accountKind: .exchange,
+            promptExcludedCalendars: [], promptIncludedCalendars: [], promptExcludedAccounts: []
+        ))
+        XCTAssertFalse(CalendarPromptPolicy.isExcluded(
+            calendarIdentifier: "cal-personal", sourceIdentifier: "src-google", accountKind: .other,
+            promptExcludedCalendars: [], promptIncludedCalendars: [], promptExcludedAccounts: []
+        ))
+    }
+
+    func testPromptPolicyExplicitIncludeOverridesWorkDefault() {
+        XCTAssertFalse(CalendarPromptPolicy.isExcluded(
+            calendarIdentifier: "cal-exchange", sourceIdentifier: "src-work", accountKind: .exchange,
+            promptExcludedCalendars: [], promptIncludedCalendars: ["cal-exchange"], promptExcludedAccounts: []
+        ))
+    }
+
+    func testPromptPolicyExplicitExcludeWinsOverPersonalDefault() {
+        XCTAssertTrue(CalendarPromptPolicy.isExcluded(
+            calendarIdentifier: "cal-personal", sourceIdentifier: "src-google", accountKind: .other,
+            promptExcludedCalendars: ["cal-personal"], promptIncludedCalendars: [], promptExcludedAccounts: []
+        ))
+    }
+
+    func testPromptPolicyAccountLevelExclusionAppliesToAllItsCalendars() {
+        XCTAssertTrue(CalendarPromptPolicy.isExcluded(
+            calendarIdentifier: "cal-other", sourceIdentifier: "src-blocked", accountKind: .other,
+            promptExcludedCalendars: [], promptIncludedCalendars: [], promptExcludedAccounts: ["src-blocked"]
+        ))
+    }
+
+    func testTogglingRecordingOfferMovesIdentifierBetweenLists() {
+        let off = CalendarPromptPolicy.togglingRecordingOffer(
+            calendarIdentifier: "cal-1", enabled: false, excludedCalendars: [], includedCalendars: ["cal-1"]
+        )
+        XCTAssertEqual(off.excluded, ["cal-1"])
+        XCTAssertEqual(off.included, [])
+
+        let on = CalendarPromptPolicy.togglingRecordingOffer(
+            calendarIdentifier: "cal-1", enabled: true, excludedCalendars: ["cal-1"], includedCalendars: []
+        )
+        XCTAssertEqual(on.excluded, [])
+        XCTAssertEqual(on.included, ["cal-1"])
+    }
+
+    func testConfigParsesPromptCalendarAndAccountLists() throws {
+        var config = AriaConfig()
+        XCTAssertEqual(config.promptExcludedCalendarIDs, [])
+        try config.set(key: "promptExcludedCalendars", value: " cal-1 , cal-2 ,, ")
+        XCTAssertEqual(config.promptExcludedCalendarIDs, ["cal-1", "cal-2"])
+        try config.set(key: "promptIncludedCalendars", value: "cal-3")
+        XCTAssertEqual(config.promptIncludedCalendarIDs, ["cal-3"])
+        try config.set(key: "promptExcludedAccounts", value: "src-1,src-2")
+        XCTAssertEqual(config.promptExcludedAccountIDs, ["src-1", "src-2"])
+        try config.set(key: "promptExcludedCalendars", value: "(ninguno)")
+        XCTAssertEqual(config.promptExcludedCalendarIDs, [])
     }
 }

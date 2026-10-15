@@ -192,4 +192,41 @@ final class SpeakerNamingTests: XCTestCase {
         XCTAssertThrowsError(try config.set(key: "speakerSeparationEnabled", value: "quizás"))
         XCTAssertTrue(AriaConfig().listing.contains("speakerSeparationEnabled"))
     }
+
+    /// Transcript real (reunión sintética de QA E2E, 3 participantes: "Yo" + dos voces separadas
+    /// en el canal del sistema). "Yo" modera entre dos hablantes DISTINTOS repetidamente — antes
+    /// del fix, cualquier primera palabra de un turno ("Buenas", "Dale", "Perdón"...) se contaba
+    /// como nombre y las menciones de "Yo" se mezclaban entre los dos vecinos sin importar a
+    /// quién se dirigían, así que ambos hablantes terminaban sugeridos con el MISMO nombre.
+    func testResolveRealMeetingTranscriptAssignsEachSpeakerItsOwnName() {
+        let raw: [(String, String)] = [
+            ("Yo", "Buenas, empecemos el SIG de QA del Sprint. Ana, Juan, ¿cómo vamos con las pruebas de regresión?"),
+            ("Hablante 1", "Hola Ana, terminé la regresión del módulo de pagos, todo verde menos un caso."),
+            ("Hablante 2", "Por mi lado dejé vista la suite de autenticación, pero encontré un Google NLogin con Google."),
+            ("Yo", "Vale, cuéntame ese back de login, Juan."),
+            ("Hablante 2", "Cuando el usuario cancela el popup de gole, la aplicación se queda cargando para siempre. Ya abrí el ticket QA482. Chau, chau, chau."),
+            ("Yo", "Perfecto, gracias Juan. Lo marcamos como bloqueante para el release del viernes. Ana, ¿cuál es el caso que falló en pagos?"),
+            ("Hablante 1", "El reembolso parcial no actualiza el saldo si la moneda es distinta a pesos. Voy a reproducirlo hoy mismo. no."),
+            ("Yo", "Dale. Entonces, Decisión, fue la regla del back de Google Login, Anna reproduce y documenta el back de reembolso, y yo reviso el reporte con el equipo de producto."),
+            ("Hablante 1", "Me parece bien. También propongo que subamos la cobertura de automatización en el check out, está quedando corto."),
+            ("Yo", "Buena idea, la metemos al backlog del próximo sprint. Ana, ¿puedes crear el ticket?"),
+            ("Hablante 1", "Sí, lo creo esta tarde."),
+            ("Yo", "Genial, gracias Ana, algo más antes de cerrar?"),
+            ("Hablante 2", "Perdón, se cayó el internet un momento. Solo quería confirmar que el deploy está y queda para hoy en la tarde."),
+            ("Yo", "Sí, confirmado. Entonces resumen, Juan corrige el bug cua 482 y hace el deploy a staging hoy, Ana documenta el bug de reembolso y crea el ticket de cobertura de checkout. Yo hablo con producto sobre el reporte de regresión. Nos vemos el jueves. Gracias. Ana. Gracias, Juan."),
+            ("Hablante 1", "Gracias a ti, Christian. Nos vemos."),
+            ("Hablante 2", "Chao, buen resto de día.")
+        ]
+        let segments = raw.enumerated().map { i, pair in
+            TranscriptSegment(start: Double(i), end: Double(i) + 1, text: pair.1, speaker: pair.0)
+        }
+        let assignments = SpeakerNaming.resolve(
+            speakerLabels: ["Hablante 1", "Hablante 2"],
+            segments: segments,
+            calendarAttendees: []
+        )
+        XCTAssertEqual(assignments["Hablante 1"]?.name, "Ana")
+        XCTAssertEqual(assignments["Hablante 2"]?.name, "Juan")
+        XCTAssertNotEqual(assignments["Hablante 1"]?.name, assignments["Hablante 2"]?.name)
+    }
 }

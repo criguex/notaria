@@ -37,9 +37,11 @@ struct MeetingCardView: View {
                     Button("Unirse", action: onJoin)
                         .buttonStyle(.bordered)
                         .tint(BrandColor.pizarra)
-                    Button("Unirse y tomar notas", action: onJoinAndTakeNotes)
-                        .buttonStyle(.borderedProminent)
-                        .tint(BrandColor.sello)
+                    if viewModel.offerRecording {
+                        Button("Unirse y tomar notas", action: onJoinAndTakeNotes)
+                            .buttonStyle(.borderedProminent)
+                            .tint(BrandColor.sello)
+                    }
                 }
                 .padding(.top, 2)
             }

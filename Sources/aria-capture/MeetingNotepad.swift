@@ -65,7 +65,7 @@ final class MeetingNotepadController: ObservableObject {
     private var flushTimer: Timer?
 
     init(directory: URL? = nil) {
-        self.directory = directory ?? FileManager.default.homeDirectoryForCurrentUser
+        self.directory = directory ?? AriaHome.directory
             .appendingPathComponent("Documents/Aria/Grabaciones", isDirectory: true)
     }
 

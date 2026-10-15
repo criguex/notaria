@@ -10,7 +10,7 @@ final class RecipeStore {
     let directory: URL
 
     init(directory: URL? = nil) {
-        self.directory = directory ?? FileManager.default.homeDirectoryForCurrentUser
+        self.directory = directory ?? AriaHome.directory
             .appendingPathComponent("Documents/Aria/Recipes")
     }
 

@@ -17,6 +17,7 @@ enum MeetingPromptDecider {
         isRecording: Bool
     ) -> Bool {
         guard !alwaysOn, !isRecording else { return false }
+        if let meeting = meetingNow, meeting.promptExcluded { return false }
         let callSignal = micInUse && !callApps.isEmpty
         return callSignal || meetingNow != nil
     }
@@ -38,6 +39,58 @@ enum MeetingPromptDecider {
         ) else { return nil }
         let candidate = key(meetingNow: meetingNow, callApps: callApps)
         return candidate == lastKey ? nil : candidate
+    }
+
+    /// true si hay alguna señal activa de llamada o reunión ahora mismo
+    /// (independiente de si se llegó a mostrar el aviso). Se usa para saber
+    /// cuándo "soltar" el `lastKey` de dedupe: si no hay nada activo, el
+    /// próximo aviso (aunque repita la misma app/calendario) debe volver a
+    /// mostrarse — de lo contrario una llamada de Teams posterior sin evento
+    /// de calendario asociado nunca vuelve a avisar porque su key
+    /// ("call:Teams") es idéntica a la de la llamada anterior.
+    static func hasActiveSignal(micInUse: Bool, callApps: [String], meetingNow: CalendarMeeting?) -> Bool {
+        (micInUse && !callApps.isEmpty) || meetingNow != nil
+    }
+
+    static func updatedLastKey(
+        micInUse: Bool,
+        callApps: [String],
+        meetingNow: CalendarMeeting?,
+        lastKey: String?
+    ) -> String? {
+        hasActiveSignal(micInUse: micInUse, callApps: callApps, meetingNow: meetingNow) ? lastKey : nil
+    }
+
+    enum Decision: String {
+        case autoStart = "auto-start"
+        case prompted = "prompted"
+        case dedupedSameSignal = "suppressed-dedupe"
+        case excludedCalendar = "suppressed-excluded-calendar"
+        case suppressedBusy = "suppressed-busy"
+        case noSignal = "no-signal"
+    }
+
+    /// Clasifica, con todas las señales, qué hizo (o habría hecho) el detector
+    /// en este tick — solo para diagnóstico/log, replica el orden real de
+    /// `RecordingController` sin duplicar su estado mutable.
+    static func decision(
+        micInUse: Bool,
+        callApps: [String],
+        meetingNow: CalendarMeeting?,
+        alwaysOn: Bool,
+        isRecording: Bool,
+        hasConsent: Bool,
+        lastKey: String?
+    ) -> Decision {
+        if micInUse, alwaysOn, hasConsent, isRecording == false { return .autoStart }
+        if let meeting = meetingNow, meeting.promptExcluded { return .excludedCalendar }
+        guard shouldPrompt(
+            micInUse: micInUse, callApps: callApps, meetingNow: meetingNow, alwaysOn: alwaysOn, isRecording: isRecording
+        ) else {
+            return (alwaysOn || isRecording) ? .suppressedBusy : .noSignal
+        }
+        let candidate = key(meetingNow: meetingNow, callApps: callApps)
+        return candidate == lastKey ? .dedupedSameSignal : .prompted
     }
 
     static func promptTitle(meetingNow: CalendarMeeting?) -> String {

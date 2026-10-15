@@ -57,28 +57,47 @@ enum SpeakerNaming {
 
     private static let sentenceStartStopwords: Set<String> = [
         "bueno", "entonces", "pero", "claro", "sí", "no", "hola", "ok", "vale", "perfecto",
-        "bien", "ahora", "mira", "oye", "eso", "esto", "yo", "nosotros", "ustedes", "ella", "él"
+        "bien", "ahora", "mira", "oye", "eso", "esto", "yo", "nosotros", "ustedes", "ella", "él",
+        "buenas", "buena", "perdón", "chao", "chau", "genial", "dale", "listo"
     ]
 
     /// Nombres propios mencionados en un texto: patrón vocativo ("gracias, Ana" / "oye Juan") o
     /// nombre al inicio de frase seguido de coma ("Ana, ¿qué opinas?"), filtrando stopwords.
+    ///
+    /// Se conserva el token SIN recortar (`rawTokens`) junto al recortado (`words`): recortar la
+    /// puntuación antes de mirarla (como hacía la versión anterior) deja "seguido de coma" y
+    /// "después de punto" siempre en falso, así que CUALQUIER primera palabra de cualquier turno
+    /// ("Buenas", "Dale", "Perdón"...) se contaba como nombre — en una reunión de varias personas
+    /// eso inunda el conteo de menciones con ruido y termina eligiendo mal (o de forma no
+    /// determinística, por el orden de iteración del diccionario) entre dos hablantes reales.
     static func extractMentionedNames(from text: String) -> [String] {
+        mentionedNamesWithPattern(in: text).map(\.name)
+    }
+
+    struct MentionedName {
+        let name: String
+        /// true: patrón vocativo ("gracias, Ana") — se dirige a quien YA habló (se le agradece/
+        /// responde) → el hablante ANTERIOR. false: nombre al inicio de frase seguido de coma
+        /// ("Ana, ¿qué opinas?") — se le da el turno a quien va a hablar → el hablante SIGUIENTE.
+        let isVocative: Bool
+    }
+
+    private static func mentionedNamesWithPattern(in text: String) -> [MentionedName] {
         guard !text.isEmpty else { return [] }
-        var found: [String] = []
-        let words = text.split(whereSeparator: { $0.isWhitespace })
-            .map { $0.trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces)) }
-            .filter { !$0.isEmpty }
+        var found: [MentionedName] = []
+        let rawTokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let words = rawTokens.map { $0.trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces)) }
 
         for (i, word) in words.enumerated() {
-            guard isCapitalizedName(word) else { continue }
+            guard !word.isEmpty, isCapitalizedName(word) else { continue }
             let lowered = word.lowercased()
             guard !vocativeLeadIns.contains(lowered), !sentenceStartStopwords.contains(lowered) else { continue }
             if i > 0, vocativeLeadIns.contains(words[i - 1].lowercased()) {
-                found.append(word)
+                found.append(MentionedName(name: word, isVocative: true))
                 continue
             }
-            if i == 0 || isSentenceBoundary(words[i - 1]) {
-                found.append(word)
+            if i == 0 || isSentenceBoundary(rawTokens[i - 1]) {
+                if rawTokens[i].hasSuffix(",") { found.append(MentionedName(name: word, isVocative: false)) }
             }
         }
         return found
@@ -95,22 +114,28 @@ enum SpeakerNaming {
     }
 
     /// Para cada mención encontrada en un turno, se atribuye al hablante ADYACENTE distinto (el
-    /// que responde o al que se dirige), no al que la pronuncia.
+    /// que responde o al que se dirige), no al que la pronuncia. Cuando los dos lados son
+    /// hablantes DISTINTOS (p.ej. "Yo" moderando entre dos personas en una reunión de 3+), el
+    /// patrón de la mención decide el lado correcto en vez de mezclar el nombre con los dos:
+    /// vocativo ("gracias, Ana") → el hablante ANTERIOR; inicio de frase ("Ana, ¿qué opinas?")
+    /// → el hablante SIGUIENTE.
     static func attributedMentions(in segments: [TranscriptSegment]) -> [String: [String]] {
         var result: [String: [String]] = [:]
         for i in segments.indices {
-            let names = extractMentionedNames(from: segments[i].text)
-            guard !names.isEmpty else { continue }
-            var candidates: [String] = []
-            if i + 1 < segments.count, segments[i + 1].speaker != segments[i].speaker {
-                candidates.append(segments[i + 1].speaker)
-            }
-            if i > 0, segments[i - 1].speaker != segments[i].speaker {
-                candidates.append(segments[i - 1].speaker)
-            }
-            for name in names {
+            let mentions = mentionedNamesWithPattern(in: segments[i].text)
+            guard !mentions.isEmpty else { continue }
+            let next = (i + 1 < segments.count && segments[i + 1].speaker != segments[i].speaker) ? segments[i + 1].speaker : nil
+            let previous = (i > 0 && segments[i - 1].speaker != segments[i].speaker) ? segments[i - 1].speaker : nil
+
+            for mention in mentions {
+                let candidates: [String]
+                if let next, let previous, next != previous {
+                    candidates = [mention.isVocative ? previous : next]
+                } else {
+                    candidates = [next, previous].compactMap { $0 }
+                }
                 for candidate in candidates {
-                    result[candidate, default: []].append(name)
+                    result[candidate, default: []].append(mention.name)
                 }
             }
         }

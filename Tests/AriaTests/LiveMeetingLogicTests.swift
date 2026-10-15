@@ -102,6 +102,148 @@ final class LiveMeetingLogicTests: XCTestCase {
         )
     }
 
+    func testShouldPromptSuppressedByExcludedCalendar() {
+        var excluded = meeting("Daily Exchange")
+        excluded.promptExcluded = true
+        XCTAssertFalse(MeetingPromptDecider.shouldPrompt(
+            micInUse: true, callApps: ["Teams"], meetingNow: excluded, alwaysOn: false, isRecording: false
+        ))
+        XCTAssertFalse(MeetingPromptDecider.shouldPrompt(
+            micInUse: false, callApps: [], meetingNow: excluded, alwaysOn: false, isRecording: false
+        ))
+    }
+
+    func testUpdatedLastKeyResetsOnceSignalClearsSoRepeatedCallPrompts() {
+        // Bug real: lastPromptKey nunca se soltaba cuando la señal desaparecía, así que
+        // una segunda llamada de Teams sin evento de calendario asociado (misma key
+        // "call:Teams") nunca volvía a avisar. updatedLastKey debe soltar el key en
+        // cuanto no hay señal activa, para que la siguiente llamada sí dispare el aviso.
+        let afterFirstCall = MeetingPromptDecider.pendingKey(
+            micInUse: true, callApps: ["Teams"], meetingNow: nil, alwaysOn: false, isRecording: false, lastKey: nil
+        )
+        XCTAssertNotNil(afterFirstCall)
+
+        XCTAssertNil(MeetingPromptDecider.pendingKey(
+            micInUse: true, callApps: ["Teams"], meetingNow: nil, alwaysOn: false, isRecording: false, lastKey: afterFirstCall
+        ))
+
+        let clearedKey = MeetingPromptDecider.updatedLastKey(
+            micInUse: false, callApps: [], meetingNow: nil, lastKey: afterFirstCall
+        )
+        XCTAssertNil(clearedKey)
+
+        let secondCallKey = MeetingPromptDecider.pendingKey(
+            micInUse: true, callApps: ["Teams"], meetingNow: nil, alwaysOn: false, isRecording: false, lastKey: clearedKey
+        )
+        XCTAssertNotNil(secondCallKey)
+        XCTAssertEqual(secondCallKey, afterFirstCall)
+    }
+
+    func testUpdatedLastKeyKeepsDedupeWhileSignalStillActive() {
+        let key = MeetingPromptDecider.pendingKey(
+            micInUse: true, callApps: ["Zoom"], meetingNow: nil, alwaysOn: false, isRecording: false, lastKey: nil
+        )
+        XCTAssertNotNil(key)
+        XCTAssertEqual(
+            MeetingPromptDecider.updatedLastKey(micInUse: true, callApps: ["Zoom"], meetingNow: nil, lastKey: key),
+            key
+        )
+    }
+
+    func testDecisionClassifiesEachBranch() {
+        XCTAssertEqual(
+            MeetingPromptDecider.decision(
+                micInUse: true, callApps: [], meetingNow: nil, alwaysOn: true, isRecording: false, hasConsent: true, lastKey: nil
+            ),
+            .autoStart
+        )
+        var excluded = meeting()
+        excluded.promptExcluded = true
+        XCTAssertEqual(
+            MeetingPromptDecider.decision(
+                micInUse: true, callApps: ["Teams"], meetingNow: excluded, alwaysOn: false, isRecording: false, hasConsent: true, lastKey: nil
+            ),
+            .excludedCalendar
+        )
+        XCTAssertEqual(
+            MeetingPromptDecider.decision(
+                micInUse: true, callApps: ["Teams"], meetingNow: nil, alwaysOn: false, isRecording: false, hasConsent: true, lastKey: nil
+            ),
+            .prompted
+        )
+        let dupeKey = MeetingPromptDecider.key(meetingNow: nil, callApps: ["Teams"])
+        XCTAssertEqual(
+            MeetingPromptDecider.decision(
+                micInUse: true, callApps: ["Teams"], meetingNow: nil, alwaysOn: false, isRecording: false, hasConsent: true, lastKey: dupeKey
+            ),
+            .dedupedSameSignal
+        )
+        XCTAssertEqual(
+            MeetingPromptDecider.decision(
+                micInUse: false, callApps: [], meetingNow: nil, alwaysOn: false, isRecording: true, hasConsent: true, lastKey: nil
+            ),
+            .suppressedBusy
+        )
+        XCTAssertEqual(
+            MeetingPromptDecider.decision(
+                micInUse: false, callApps: [], meetingNow: nil, alwaysOn: false, isRecording: false, hasConsent: true, lastKey: nil
+            ),
+            .noSignal
+        )
+    }
+
+    func testDetectorLogLineOmitsTitlesAndNamesIncludesSignalsAndDecision() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let line = DetectorLogFormatter.line(
+            at: date,
+            micInUse: true,
+            callApps: ["Teams", "Zoom"],
+            hasMeetingNow: true,
+            meetingPromptExcluded: true,
+            alwaysOn: false,
+            isRecording: false,
+            decision: MeetingPromptDecider.Decision.excludedCalendar.rawValue
+        )
+        XCTAssertTrue(line.contains("mic=true"))
+        XCTAssertTrue(line.contains("apps=Teams+Zoom"))
+        XCTAssertTrue(line.contains("meetingNow=true"))
+        XCTAssertTrue(line.contains("meetingExcluded=true"))
+        XCTAssertTrue(line.contains("decision=suppressed-excluded-calendar"))
+        XCTAssertFalse(line.lowercased().contains("daily"))
+        XCTAssertFalse(line.lowercased().contains("sync"))
+    }
+
+    func testDetectorLogWriterRotatesWhenOverLimit() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("detector.log")
+        let writer = DetectorLogWriter(url: url, maxBytes: 50)
+
+        for index in 0..<10 {
+            writer.append("linea de prueba numero \(index) con texto de relleno")
+        }
+        writer.flush()
+
+        let rotated = dir.appendingPathComponent("detector.1.log")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rotated.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testMeetingCardOffersRecordingByDefaultAndHidesItWhenExcluded() {
+        var meeting = CalendarMeeting(
+            title: "Daily", start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 100),
+            attendees: [], isAllDay: false, videoLink: "https://meet.google.com/abc-defg-hij"
+        )
+        let openCard = MeetingCardBuilder.build(meeting: meeting, at: Date(timeIntervalSince1970: 0), nativeAppInstalled: false)
+        XCTAssertTrue(openCard.offerRecording)
+
+        meeting.promptExcluded = true
+        let excludedCard = MeetingCardBuilder.build(meeting: meeting, at: Date(timeIntervalSince1970: 0), nativeAppInstalled: false)
+        XCTAssertFalse(excludedCard.offerRecording)
+        XCTAssertTrue(excludedCard.canJoin)
+    }
+
     func testPromptTitleMentionsMeetingWhenAvailable() {
         XCTAssertEqual(MeetingPromptDecider.promptTitle(meetingNow: nil), "¿Tomar notas con NotarIA?")
         XCTAssertEqual(

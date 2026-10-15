@@ -9,6 +9,10 @@ struct CalendarMeeting: Equatable {
     var isAllDay: Bool
     var companies: [String] = []
     var videoLink: String? = nil
+    /// true cuando el calendario/cuenta de origen tiene "Ofrecer grabar" apagado
+    /// (ver `CalendarPromptPolicy`): no debe disparar el aviso de grabación ni
+    /// mostrar "Unirse y tomar notas" en la tarjeta.
+    var promptExcluded: Bool = false
 
     var hasParticipantsOrLink: Bool { !attendees.isEmpty || videoLink != nil }
 }
@@ -112,6 +116,26 @@ extension CalendarMeeting {
         ignored.contains(calendarTitle.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
+    /// Prefijos de título que delatan una reunión cancelada cuando el status
+    /// de EKEvent no alcanza a reflejarlo (algunas cuentas Exchange/CalDAV
+    /// reescriben el título en vez de marcar `.canceled`).
+    static let cancelledTitlePrefixes = ["cancelado:", "canceled:", "cancelled:", "cancelada:"]
+
+    static func hasCancelledTitlePrefix(_ title: String) -> Bool {
+        let folded = title
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .trimmingCharacters(in: .whitespaces)
+        return cancelledTitlePrefixes.contains { folded.hasPrefix($0) }
+    }
+
+    /// Lógica pura: una reunión se oculta en toda la app (agenda, tarjeta,
+    /// título de barra, brief, decisión del aviso) si está cancelada
+    /// (status de EKEvent o prefijo de título), si el usuario la rechazó,
+    /// o si es un evento de todo-el-día.
+    static func isHidden(title: String, isAllDay: Bool, statusCancelled: Bool, userDeclined: Bool) -> Bool {
+        isAllDay || statusCancelled || userDeclined || hasCancelledTitlePrefix(title)
+    }
+
     static func filtered(_ meetings: [CalendarMeeting], ignoreNoParticipants: Bool) -> [CalendarMeeting] {
         guard ignoreNoParticipants else { return meetings }
         return meetings.filter(\.hasParticipantsOrLink)
@@ -158,12 +182,28 @@ final class MeetingCalendar {
 
     func meetings(from start: Date, to end: Date) -> [CalendarMeeting] {
         guard Self.isAuthorized, start < end else { return [] }
-        let ignored = AriaConfig.load().ignoredCalendars
+        let config = AriaConfig.load()
+        let ignored = config.ignoredCalendars
+        let excludedCalendars = config.promptExcludedCalendarIDs
+        let includedCalendars = config.promptIncludedCalendarIDs
+        let excludedAccounts = config.promptExcludedAccountIDs
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate).compactMap { event in
             guard let eventStart = event.startDate, let eventEnd = event.endDate else { return nil }
             if let calendarTitle = event.calendar?.title,
                CalendarMeeting.isIgnored(calendarTitle: calendarTitle, ignored: ignored) {
+                return nil
+            }
+            let title = event.title?.trimmingCharacters(in: .whitespaces) ?? ""
+            let userDeclined = (event.attendees ?? []).contains {
+                $0.isCurrentUser && $0.participantStatus == .declined
+            }
+            if CalendarMeeting.isHidden(
+                title: title,
+                isAllDay: event.isAllDay,
+                statusCancelled: event.status == .canceled,
+                userDeclined: userDeclined
+            ) {
                 return nil
             }
             let participants = (event.attendees ?? []).filter {
@@ -175,7 +215,18 @@ final class MeetingCalendar {
             let companies = participants.compactMap {
                 PeopleNotes.company(fromAddress: $0.url.absoluteString)
             }
-            let title = event.title?.trimmingCharacters(in: .whitespaces) ?? ""
+            let accountKind = CalendarAccountKind.classify(
+                sourceType: event.calendar?.source?.sourceType ?? .local,
+                sourceTitle: event.calendar?.source?.title ?? ""
+            )
+            let promptExcluded = CalendarPromptPolicy.isExcluded(
+                calendarIdentifier: event.calendar?.calendarIdentifier ?? "",
+                sourceIdentifier: event.calendar?.source?.sourceIdentifier ?? "",
+                accountKind: accountKind,
+                promptExcludedCalendars: excludedCalendars,
+                promptIncludedCalendars: includedCalendars,
+                promptExcludedAccounts: excludedAccounts
+            )
             return CalendarMeeting(
                 title: title.isEmpty ? "Reunión" : title,
                 start: eventStart,
@@ -183,7 +234,8 @@ final class MeetingCalendar {
                 attendees: CalendarMeeting.uniqueAttendees(names),
                 isAllDay: event.isAllDay,
                 companies: CalendarMeeting.uniqueAttendees(companies),
-                videoLink: CalendarMeeting.videoLink(in: [event.location, event.notes, event.url?.absoluteString])
+                videoLink: CalendarMeeting.videoLink(in: [event.location, event.notes, event.url?.absoluteString]),
+                promptExcluded: promptExcluded
             )
         }
     }
@@ -202,14 +254,48 @@ final class MeetingCalendar {
         )
     }
 
-    func calendarNames() -> [(source: String, title: String, ignored: Bool)] {
+    /// Fila de la sección "Calendarios" de Ajustes: un calendario de una cuenta,
+    /// con el estado resuelto de sus dos toggles ("Mostrar en agenda" = !ignored,
+    /// "Ofrecer grabar" = !promptExcluded).
+    struct CalendarListing: Identifiable, Equatable {
+        let id: String
+        let sourceID: String
+        let source: String
+        let title: String
+        let ignored: Bool
+        let promptExcluded: Bool
+        let accountKind: CalendarAccountKind
+    }
+
+    func calendarListings() -> [CalendarListing] {
         guard Self.isAuthorized else { return [] }
-        let ignored = AriaConfig.load().ignoredCalendars
+        let config = AriaConfig.load()
+        let ignored = config.ignoredCalendars
+        let excludedCalendars = config.promptExcludedCalendarIDs
+        let includedCalendars = config.promptIncludedCalendarIDs
+        let excludedAccounts = config.promptExcludedAccountIDs
         return store.calendars(for: .event)
             .map { calendar in
-                (source: calendar.source?.title ?? "(sin cuenta)",
-                 title: calendar.title,
-                 ignored: CalendarMeeting.isIgnored(calendarTitle: calendar.title, ignored: ignored))
+                let accountKind = CalendarAccountKind.classify(
+                    sourceType: calendar.source?.sourceType ?? .local,
+                    sourceTitle: calendar.source?.title ?? ""
+                )
+                return CalendarListing(
+                    id: calendar.calendarIdentifier,
+                    sourceID: calendar.source?.sourceIdentifier ?? "",
+                    source: calendar.source?.title ?? "(sin cuenta)",
+                    title: calendar.title,
+                    ignored: CalendarMeeting.isIgnored(calendarTitle: calendar.title, ignored: ignored),
+                    promptExcluded: CalendarPromptPolicy.isExcluded(
+                        calendarIdentifier: calendar.calendarIdentifier,
+                        sourceIdentifier: calendar.source?.sourceIdentifier ?? "",
+                        accountKind: accountKind,
+                        promptExcludedCalendars: excludedCalendars,
+                        promptIncludedCalendars: includedCalendars,
+                        promptExcludedAccounts: excludedAccounts
+                    ),
+                    accountKind: accountKind
+                )
             }
             .sorted { ($0.source, $0.title) < ($1.source, $1.title) }
     }

@@ -34,7 +34,7 @@ enum WhisperModelStore {
     }
 
     static var modelsDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        AriaHome.applicationSupportDirectory
             .appendingPathComponent("Aria/models", isDirectory: true)
     }
 

@@ -9,6 +9,9 @@ struct MeetingCardViewModel: Equatable {
     let platformLabel: String?
     let attendeesLabel: String?
     let joinURL: URL?
+    /// false cuando el calendario de origen tiene "Ofrecer grabar" apagado:
+    /// la tarjeta muestra "Unirse" pero no "Unirse y tomar notas".
+    let offerRecording: Bool
 
     var canJoin: Bool { joinURL != nil }
 }
@@ -30,7 +33,8 @@ enum MeetingCardBuilder {
             timeLabel: MeetingPromptDecider.timeLabel(for: meeting.start, timeZone: timeZone),
             platformLabel: MeetingPromptDecider.platformLabel(videoLink: meeting.videoLink),
             attendeesLabel: attendeesLabel(meeting.attendees, maxShown: maxAttendeesShown),
-            joinURL: joinURL
+            joinURL: joinURL,
+            offerRecording: !meeting.promptExcluded
         )
     }
 

@@ -14,7 +14,7 @@ struct VoiceProfile: Codable, Equatable {
 final class VoiceMemoryStore {
 
     static var defaultFileURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        AriaHome.applicationSupportDirectory
             .appendingPathComponent("Aria/voice-memory.json")
     }
 

@@ -740,6 +740,7 @@ struct SettingsSectionView: View {
     @State private var slackSavedMessage: String?
     @State private var loginItemEnabled = LoginItemManager.isEnabled
     @State private var loginItemMessage: String?
+    @State private var calendarListings: [MeetingCalendar.CalendarListing] = []
 
     var body: some View {
         Form {
@@ -785,6 +786,38 @@ struct SettingsSectionView: View {
                 Button("Ajustes del sistema…") {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preferences.internetaccounts") {
                         NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            Section("Calendarios") {
+                Text("""
+                "Mostrar en agenda" oculta el calendario por completo (agenda de Hoy, tarjeta del menú, \
+                título de la barra y aviso de grabación). "Ofrecer grabar" solo quita el botón "Unirse y \
+                tomar notas" y el aviso automático — siempre puedes grabar a mano desde el menú. Los \
+                calendarios de trabajo (Exchange/Outlook) arrancan con "Ofrecer grabar" apagado; puedes \
+                cambiarlo abajo.
+                """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if calendarListings.isEmpty {
+                    Text("Sin calendarios visibles todavía.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(calendarGroups, id: \.source) { group in
+                        Text(group.source).font(.subheadline.bold())
+                        ForEach(group.listings) { listing in
+                            HStack {
+                                Text(listing.title)
+                                Spacer()
+                                Toggle("Mostrar en agenda", isOn: Binding(
+                                    get: { !listing.ignored },
+                                    set: { toggleAgenda(listing, show: $0) }
+                                ))
+                                Toggle("Ofrecer grabar", isOn: Binding(
+                                    get: { !listing.promptExcluded },
+                                    set: { toggleRecordingOffer(listing, offer: $0) }
+                                ))
+                            }
+                        }
                     }
                 }
             }
@@ -853,7 +886,55 @@ struct SettingsSectionView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Ajustes")
-        .task { refreshPermissions() }
+        .task {
+            refreshPermissions()
+            reloadCalendarListings()
+        }
+    }
+
+    private struct CalendarGroup {
+        let source: String
+        let listings: [MeetingCalendar.CalendarListing]
+    }
+
+    private var calendarGroups: [CalendarGroup] {
+        var order: [String] = []
+        var bySource: [String: [MeetingCalendar.CalendarListing]] = [:]
+        for listing in calendarListings {
+            if bySource[listing.source] == nil { order.append(listing.source) }
+            bySource[listing.source, default: []].append(listing)
+        }
+        return order.map { CalendarGroup(source: $0, listings: bySource[$0] ?? []) }
+    }
+
+    private func reloadCalendarListings() {
+        calendarListings = MeetingCalendar.shared.calendarListings()
+    }
+
+    private func toggleAgenda(_ listing: MeetingCalendar.CalendarListing, show: Bool) {
+        var updated = AriaConfig.load()
+        var names = Set(updated.ignoredCalendars)
+        let key = listing.title.trimmingCharacters(in: .whitespaces).lowercased()
+        if show { names.remove(key) } else { names.insert(key) }
+        updated.calendarIgnore = names.sorted().joined(separator: ", ")
+        try? updated.save()
+        config = updated
+        reloadCalendarListings()
+    }
+
+    private func toggleRecordingOffer(_ listing: MeetingCalendar.CalendarListing, offer: Bool) {
+        var updated = AriaConfig.load()
+        let result = CalendarPromptPolicy.togglingRecordingOffer(
+            calendarIdentifier: listing.id,
+            enabled: offer,
+            excludedCalendars: updated.promptExcludedCalendarIDs,
+            includedCalendars: updated.promptIncludedCalendarIDs
+        )
+        updated.promptExcludedCalendars = result.excluded.joined(separator: ",")
+        updated.promptIncludedCalendars = result.included.joined(separator: ",")
+        try? updated.save()
+        config = updated
+        reloadCalendarListings()
     }
 
     private func permissionRow(_ name: String, status: String, settingsURL: String?) -> some View {
