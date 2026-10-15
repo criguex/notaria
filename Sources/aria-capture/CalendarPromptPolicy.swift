@@ -1,10 +1,8 @@
 import EventKit
 import Foundation
 
-/// Clasificación pura de una cuenta de calendario (EKSource) para decidir si
-/// por defecto NotarIA debe ofrecer grabar sus reuniones. Exchange y los
-/// CalDAV de Outlook/Office 365 son "cuentas de trabajo": arrancan con
-/// "Ofrecer grabar" apagado (ver AriaConfig.promptExcludedCalendars/Accounts).
+/// Clasificación pura de una cuenta de calendario (EKSource), usada para
+/// etiquetar cuentas en Ajustes. Todas ofrecen grabar por defecto.
 enum CalendarAccountKind: Equatable {
     case exchange
     case outlookCalDAV
@@ -20,13 +18,11 @@ enum CalendarAccountKind: Equatable {
         }
         return .other
     }
-
-    var isWorkAccountDefault: Bool { self != .other }
 }
 
 /// Resuelve si un calendario debe quedar excluido del aviso de grabación
-/// ("Ofrecer grabar" apagado), combinando overrides explícitos del usuario
-/// con el default de cuentas de trabajo. Pura y testeable: no toca EventKit.
+/// ("Ofrecer grabar" apagado) según los overrides explícitos del usuario.
+/// Por defecto todo calendario ofrece grabar. Pura y testeable: no toca EventKit.
 enum CalendarPromptPolicy {
 
     static func isExcluded(
@@ -40,7 +36,7 @@ enum CalendarPromptPolicy {
         if promptIncludedCalendars.contains(calendarIdentifier) { return false }
         if promptExcludedCalendars.contains(calendarIdentifier) { return true }
         if promptExcludedAccounts.contains(sourceIdentifier) { return true }
-        return accountKind.isWorkAccountDefault
+        return false
     }
 
     /// Aplica el toggle "Ofrecer grabar" de un calendario concreto, devolviendo

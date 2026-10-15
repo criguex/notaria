@@ -78,7 +78,7 @@ struct AriaConfig: Codable {
     var promptExcludedCalendarIDs: [String] { Self.parsedIdentifierList(promptExcludedCalendars) }
 
     /// Identificadores de EKCalendar con "Ofrecer grabar" encendido explícitamente — tiene prioridad
-    /// sobre el default de cuentas de trabajo (Exchange/Outlook).
+    /// para reactivar "Ofrecer grabar" en un calendario excluido antes.
     var promptIncludedCalendarIDs: [String] { Self.parsedIdentifierList(promptIncludedCalendars) }
 
     /// Identificadores de EKSource (cuentas completas) con "Ofrecer grabar" apagado para todos sus calendarios.

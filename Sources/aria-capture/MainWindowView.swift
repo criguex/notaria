@@ -793,9 +793,7 @@ struct SettingsSectionView: View {
                 Text("""
                 "Mostrar en agenda" oculta el calendario por completo (agenda de Hoy, tarjeta del menú, \
                 título de la barra y aviso de grabación). "Ofrecer grabar" solo quita el botón "Unirse y \
-                tomar notas" y el aviso automático — siempre puedes grabar a mano desde el menú. Los \
-                calendarios de trabajo (Exchange/Outlook) arrancan con "Ofrecer grabar" apagado; puedes \
-                cambiarlo abajo.
+                tomar notas" y el aviso automático — siempre puedes grabar a mano desde el menú.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)

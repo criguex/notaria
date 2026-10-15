@@ -239,13 +239,10 @@ extension CalendarLogicTests {
         XCTAssertEqual(CalendarAccountKind.classify(sourceType: .calDAV, sourceTitle: "outlook.office365.com"), .outlookCalDAV)
         XCTAssertEqual(CalendarAccountKind.classify(sourceType: .calDAV, sourceTitle: "iCloud"), .other)
         XCTAssertEqual(CalendarAccountKind.classify(sourceType: .local, sourceTitle: "On My Mac"), .other)
-        XCTAssertTrue(CalendarAccountKind.exchange.isWorkAccountDefault)
-        XCTAssertTrue(CalendarAccountKind.outlookCalDAV.isWorkAccountDefault)
-        XCTAssertFalse(CalendarAccountKind.other.isWorkAccountDefault)
     }
 
-    func testPromptPolicyDefaultsWorkAccountsExcludedUnlessOverridden() {
-        XCTAssertTrue(CalendarPromptPolicy.isExcluded(
+    func testPromptPolicyOffersRecordingEverywhereByDefault() {
+        XCTAssertFalse(CalendarPromptPolicy.isExcluded(
             calendarIdentifier: "cal-exchange", sourceIdentifier: "src-work", accountKind: .exchange,
             promptExcludedCalendars: [], promptIncludedCalendars: [], promptExcludedAccounts: []
         ))
